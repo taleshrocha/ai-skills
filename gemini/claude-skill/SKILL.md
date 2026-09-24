@@ -132,14 +132,12 @@ AGY with `--add-dir`. The gate still only inspects the working repository, so
 a reference repo cannot be modified without the gate noticing nothing — state
 the read-only constraint in the contract too.
 
-## Run it live — never let the user watch a spinner
+## Run it in the background — and then be quiet
 
-A real run takes minutes. Run it in the foreground and the user sees nothing at
-all until it ends, which is the single worst property this Skill can have.
-Always use both halves of this pattern:
-
-**1. Launch in the background** with a run id you choose, so the log path is
-known before the run exists:
+Every time Claude is woken, the entire conversation is re-read and re-inferred.
+A wake-up is the most expensive event in this Skill — more expensive, per
+wake, than a minute of Gemini working. So the run is launched once and Claude
+is woken exactly once, when it is finished.
 
 ```bash
 GEMINI_RUN_ID=ci-$(date +%H%M%S) ~/.claude/skills/gemini/scripts/run-gemini.sh ultra <<'EOF'
@@ -147,42 +145,40 @@ GEMINI_RUN_ID=ci-$(date +%H%M%S) ~/.claude/skills/gemini/scripts/run-gemini.sh u
 EOF
 ```
 
-Call it with Bash `run_in_background: true`. You are re-invoked when it exits.
+Launch it with Bash `run_in_background: true`. That is the whole pattern.
 
-**2. Arm a Monitor on the same run id**, in the same response:
+**Never arm a Monitor on a Gemini run.** Monitor delivers one notification per
+event, and every notification is a full Claude turn. A run emitting thirty
+milestones costs thirty complete inference passes over the whole conversation,
+which is many times the cost of the Gemini work being reported. It converts
+this Skill from a token saver into a token amplifier.
+
+**Never narrate progress.** Do not post a line each time something happens. Do
+not acknowledge milestones. Between launching the run and its completion,
+Claude should produce no output at all — either work on something genuinely
+independent, or say one sentence and stop.
+
+### How the user watches
+
+The run streams a timestamped line per step to its background task output,
+which the harness shows live. That costs Claude nothing, because Claude is not
+being woken to read it.
+
+From their own terminal they can also use:
 
 ```bash
-gemini-tail ci-143207
+gemini-tail      # sparse milestones, exits when the run ends
+gemini-watch     # full live stream, follows every retry
 ```
 
-`gemini-tail` emits one line per milestone and exits when the run finishes, so
-each milestone becomes its own chat notification while the work happens. The
-feed is deliberately sparse — start, files written, subagents, tool failures,
-gate verdict, retries, and a heartbeat every 15 steps — because a per-step feed
-would be throttled as a firehose.
+Both read the log on disk. Neither involves Claude.
 
-What the user sees arriving live:
+### When it finishes
 
-```text
-[0:00] start   attempt 1 · model=gemini-3.8-flash-high
-[0:22] write     src/orders/OrderService.java
-[1:04] subagent  gemini-test-worker
-[1:38] …       30 steps, working (last: cmd ./mvnw -q -pl orders test)
-  gate      PASS
-[done]   run ci-143207 finished
-```
-
-When the run ends you receive the full per-step timeline plus the gate report
-and the JSON result. **Relay the timeline and gate report to the user verbatim
-in a fenced code block** before your own commentary — it is already capped and
-redacted, and it is the user's record of what Gemini actually did.
-
-Then add your own short verdict: what changed, what you checked, what you did
-not check, what risk you are carrying.
-
-For a terminal-side view the user can also run `gemini-watch` (full event
-stream, follows retries), `gemini-status` (one-shot summary) or `gemini-runs`
-(recent runs and verdicts). Those read the log on disk and cost no context.
+One completion notification arrives. Read the output file, relay the step
+timeline and gate report to the user verbatim in a fenced code block, then add
+a short verdict: what changed, what you checked, what you did not check, what
+risk you are carrying. That is one turn, not thirty.
 
 ## Claude's review, scaled to risk
 
@@ -283,6 +279,23 @@ This Skill can be explicitly stacked with another Skill:
 
 When stacked, this Skill does not replace or modify the other Skill. The
 trailing task is shared.
+
+### With caveman
+
+Caveman compresses Claude's chat prose. It must not reach anything else:
+
+| Surface | Style |
+|---|---|
+| Claude's commentary, verdict, questions | caveman-compressed |
+| The contract piped to `run-gemini.sh` | **normal prose** |
+| The relayed timeline and gate report | verbatim, never rewritten |
+| Code and config Gemini writes | normal prose |
+
+A contract is a spec handed to another agent, which caveman's own boundary rule
+already exempts from compression. Honour it strictly: dropped articles and
+fragments are exactly where scope and negation live, so a compressed contract
+is one Gemini will implement the ambiguity of. `modify only X, do not touch Y`
+has to survive intact.
 
 ## Final principle
 

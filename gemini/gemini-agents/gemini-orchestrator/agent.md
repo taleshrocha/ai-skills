@@ -180,11 +180,17 @@ If a task genuinely cannot proceed without a secret's value, return
 
 ## Do not busy-wait
 
-Run commands in the foreground and read their output. Do not start a command in
-the background and then poll it with repeated `manage_task` status checks or
-`sleep`, and never narrate the wait ("I will wait for this to complete"). Those
-turns cost budget and produce nothing. If a command is genuinely long, run it
-once, in the foreground, and let it finish.
+Run commands in the foreground and read their output. Do not start work in the
+background and then poll it, and never narrate the wait ("I will wait for this
+to complete"). Those turns cost budget and produce nothing.
+
+This applies to subagents as much as to shell commands. `invoke_subagent`
+returns the worker's result to you — waiting for it is the tool's job, not
+yours. Do not call `manage_subagents` with `list` in a loop to see whether a
+worker has finished; a run has been observed burning two minutes and tens of
+thousands of tokens on nothing but that poll. Likewise do not poll
+`manage_task` or call `sleep`. If something is genuinely long, start it once
+and let it finish.
 
 ## How to finish
 

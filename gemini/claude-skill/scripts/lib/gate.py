@@ -144,17 +144,36 @@ def run_verify(repo, commands):
     return results
 
 
+def dirty_files(repo):
+    """Map every path differing from HEAD to a hash of its current content."""
+    state = {}
+    for line in git(repo, "status", "--porcelain").splitlines():
+        path = line[3:].strip().strip('"')
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        full = Path(repo) / path
+        try:
+            digest = hashlib.sha256(full.read_bytes()).hexdigest() if full.is_file() else "dir"
+        except Exception:
+            digest = "unreadable"
+        state[path] = digest
+    return state
+
+
 def cmd_snapshot(args):
     out = Path(args.run_dir)
     out.mkdir(parents=True, exist_ok=True)
     if not is_repo(args.repo):
         (out / "baseline.diff").write_text("", encoding="utf-8")
         (out / "baseline.hash").write_text("no-git", encoding="utf-8")
+        (out / "baseline.files.json").write_text("{}", encoding="utf-8")
         return
     status, diff = worktree_state(args.repo)
     (out / "baseline.diff").write_text(diff, encoding="utf-8")
     (out / "baseline.hash").write_text(
         hashlib.sha256((status + diff).encode()).hexdigest(), encoding="utf-8")
+    (out / "baseline.files.json").write_text(
+        json.dumps(dirty_files(args.repo)), encoding="utf-8")
 
 
 def build_feedback(reasons, verify_results, stubs, result):
@@ -223,21 +242,37 @@ def cmd_check(args):
         baseline_diff = (run_dir / "baseline.diff").read_text(errors="replace") \
             if (run_dir / "baseline.diff").exists() else ""
 
-        if not args.readonly and not changed and not escalate:
+        try:
+            before = json.loads((run_dir / "baseline.files.json").read_text())
+        except Exception:
+            before = {}
+        after = dirty_files(args.repo)
+        touched = sorted(p for p in set(before) | set(after)
+                         if before.get(p) != after.get(p))
+
+        if args.readonly:
+            # A reconnaissance run must leave the workspace exactly as it found it.
+            # Skipping the check is not the same as proving nothing happened.
+            if touched:
+                reasons.append("Read-only run modified the workspace: "
+                               + ", ".join(touched[:10]))
+        elif not changed and not escalate:
             reasons.append("No file in the workspace changed. Nothing was implemented.")
 
         stubs = [] if args.allow_todo else scan_stubs(new_diff, baseline_diff)
         if stubs:
             reasons.append(f"{len(stubs)} unfinished-code marker(s) in the new diff.")
-        # `git diff --stat` says nothing about new files, so count them separately;
-        # otherwise a run that only adds files reports as having changed nothing.
-        stat = git(args.repo, "diff", "--stat", "HEAD").strip().splitlines()
-        parts = [stat[-1].strip()] if stat else []
-        new_files = [l[3:].strip() for l in new_status.splitlines() if l.startswith("?? ")]
-        if new_files:
-            shown = ", ".join(new_files[:3]) + ("…" if len(new_files) > 3 else "")
-            parts.append(f"{len(new_files)} new file(s): {shown}")
-        report.append("  changed   " + ("; ".join(parts) if parts else "nothing changed"))
+        # Report what THIS run touched. A plain diff against HEAD would also count
+        # work that was already uncommitted before the run started.
+        if touched:
+            shown = ", ".join(touched[:5]) + ("…" if len(touched) > 5 else "")
+            report.append(f"  changed   {len(touched)} file(s) this run: {shown}")
+        else:
+            report.append("  changed   nothing changed by this run")
+        pre_existing = len(before)
+        if pre_existing:
+            report.append(f"  note      {pre_existing} file(s) were already "
+                          f"uncommitted before this run")
     else:
         stubs = []
         report.append("  changed   (not a git repository — diff gate skipped)")
@@ -276,6 +311,7 @@ def cmd_check(args):
     passed = not reasons
     verdict = {
         "pass": passed,
+        "touched": touched if is_repo(args.repo) else [],
         "escalate": escalate,
         "reasons": reasons,
         "verify": [{"command": v["command"], "exit": v["exit"]} for v in verify_results],

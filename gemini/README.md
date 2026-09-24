@@ -80,58 +80,28 @@ that would genuinely fail if the work were wrong. A command that cannot fail
 
 ## Transparency
 
-A run takes minutes, so it streams while it works rather than printing only at
-the end. Launch it in the background with a chosen run id and tail the
-milestones:
-
-```bash
-GEMINI_RUN_ID=my-run ./run-gemini.sh ultra <<'EOF' &
-...
-EOF
-gemini-tail my-run
-```
-
-`gemini-tail` prints one line per milestone and exits when the run ends. Under
-Claude Code it is driven by the Monitor tool, so each line lands in the chat as
-it happens:
+A run streams a timestamped line per step as it works, so nothing sits silent:
 
 ```text
 [0:00] start   attempt 1 · model=gemini-3.8-flash-high
 [0:22] write     src/orders/OrderService.java
 [1:04] subagent  gemini-test-worker
-[1:38] …       30 steps, working (last: cmd ./mvnw -q -pl orders test)
-  gate      PASS
-[done]   run my-run finished
-```
-
-The feed is deliberately sparse — start, writes, subagents, failures, gate
-verdict, retries, heartbeat every 15 steps — so it never becomes a firehose.
-
-When the run finishes, the caller receives the full per-step timeline, the gate
-report, and one compact JSON result:
-
-```text
-[0:00] start   attempt 1 · model=gemini-3.8-flash-high
-[0:00] cmd       ls -la && git status
-[0:02] read      src/orders/OrderService.java
-[0:22] write     src/orders/OrderService.java
-[1:12] cmd       ./mvnw -q -pl orders test
-── gemini stopped: turns=4 wall=96s gemini_tokens=158180 ──
-  changed   1 file changed, 27 insertions(+), 2 deletions(-)
-  verify    [ok  ] ./mvnw -q -pl orders test
   gate      PASS
 ```
 
-Everything is credential-redacted and line-capped, so full visibility stays
-cheap. The untruncated event stream never enters Claude's context — it is on
-disk:
+Run it in the background and the harness shows that stream live. Watch it from
+your own terminal with `gemini-tail` (sparse milestones, exits when the run
+ends) or `gemini-watch` (full stream, follows retries). `gemini-status` and
+`gemini-runs` summarise finished runs.
 
-```bash
-gemini-tail             # sparse milestones, exits when the run ends
-gemini-watch            # full live stream, follows every retry attempt
-gemini-status           # one-shot summary of the last run
-gemini-runs             # recent runs with their gate verdicts
-```
+**Do not wire these into an agent notification loop.** Every notification
+delivered to Claude is a full turn over the whole conversation — a run emitting
+thirty milestones would cost thirty inference passes, far more than the Gemini
+work itself. Live visibility belongs in the terminal and the task output panel,
+where it costs nothing. Claude is woken once, at the end.
+
+Everything is credential-redacted and line-capped. The untruncated event stream
+stays on disk and never enters Claude's context.
 
 ## What the gate checks
 

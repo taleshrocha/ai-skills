@@ -1,126 +1,180 @@
 #!/usr/bin/env python3
-import json, os, re, sys, time
+"""Live view of a Gemini run, in your own terminal, at zero Claude token cost.
+
+Follows every attempt of a run in order (events-1, events-2, ...), so a run that
+the completion gate sent back to Gemini keeps streaming without restarting.
+"""
+
+import json
+import os
+import re
+import sys
+import time
 from pathlib import Path
 
-ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home()/".local/state")) / "gemini-skill/runs"
+ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "gemini-skill/runs"
 
-def redact(s):
-    if not isinstance(s, str): return s
-    pats = [
-        (r'(?i)(PRIVATE-TOKEN\s*[:=]\s*)[^\s,"\']+', r'\1[REDACTED]'),
-        (r'(?i)(Authorization\s*:\s*Bearer\s+)[^\s,"\']+', r'\1[REDACTED]'),
-        (r'(?i)(password|passwd|secret|token|api[_-]?key|secret[_-]?id)\s*([=:])\s*([^\s,"\']+)', r'\1\2[REDACTED]'),
-        (r'(?i)glpat-[A-Za-z0-9_-]+', '[REDACTED_GITLAB_TOKEN]'),
-        (r'-----BEGIN [^-]+ PRIVATE KEY-----.*?-----END [^-]+ PRIVATE KEY-----', '[REDACTED_PRIVATE_KEY]'),
-    ]
-    for p, r in pats:
-        s = re.sub(p, r, s, flags=re.DOTALL)
-    return s
+PATTERNS = [
+    (r'(?i)(PRIVATE-TOKEN\s*[:=]\s*)[^\s,"\']+', r'\1[REDACTED]'),
+    (r'(?i)(Authorization\s*:\s*Bearer\s+)[^\s,"\']+', r'\1[REDACTED]'),
+    (r'(?i)\b(password|passwd|secret|token|api[_-]?key|access[_-]?key)\b\s*([=:])\s*[^\s,"\']+',
+     r'\1\2[REDACTED]'),
+    (r'glpat-[A-Za-z0-9_-]{10,}', '[REDACTED_GITLAB_TOKEN]'),
+    (r'gh[pousr]_[A-Za-z0-9]{20,}', '[REDACTED_GITHUB_TOKEN]'),
+    (r'AKIA[0-9A-Z]{16}', '[REDACTED_AWS_KEY]'),
+    (r'-----BEGIN [^-]+ PRIVATE KEY-----.*?-----END [^-]+ PRIVATE KEY-----', '[REDACTED_PRIVATE_KEY]'),
+]
 
-def latest_run():
-    if not ROOT.exists(): return None
+
+def redact(value):
+    if not isinstance(value, str):
+        return value
+    for pattern, replacement in PATTERNS:
+        value = re.sub(pattern, replacement, value, flags=re.DOTALL)
+    return value
+
+
+def clip(value, limit):
+    value = " ".join(str(value or "").split())
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def pick_run():
+    if not ROOT.exists():
+        return None
+    arg = sys.argv[1] if len(sys.argv) > 1 else "latest"
+    if arg != "latest":
+        candidate = ROOT / arg
+        return candidate if candidate.is_dir() else None
     dirs = [p for p in ROOT.iterdir() if p.is_dir()]
     return max(dirs, key=lambda p: p.stat().st_mtime) if dirs else None
 
-def choose():
-    arg = sys.argv[1] if len(sys.argv) > 1 else "latest"
-    if arg == "latest":
-        return latest_run()
-    p = ROOT / arg
-    return p if p.is_dir() else None
 
-run = choose()
-if not run:
-    print("No Gemini runs found.")
-    sys.exit(1)
+def render(event):
+    kind = event.get("event") or event.get("type")
 
-events = run/"events.ndjson"
-status = run/"status.log"
-stderr = run/"stderr.log"
-print(f"📡 Gemini run: {run.name}")
-print(f"   logs: {run}")
-print("   Ctrl+C to stop watching.\n")
+    if kind == "init":
+        info = event.get("init") or {}
+        print(f"🚀 START    agent={info.get('agent', '-')} model={info.get('model', '-')} "
+              f"cwd={info.get('cwd', '-')}", flush=True)
+        return None
 
-pos = 0
-seen_results = set()
+    if kind == "result":
+        result = event.get("result") or {}
+        usage = result.get("usage") or {}
+        print(f"\n✅ ATTEMPT DONE  status={result.get('status', '-')} "
+              f"turns={result.get('num_turns', 0)} "
+              f"duration={result.get('duration_seconds', 0)}s "
+              f"tokens={usage.get('total_tokens', 0)}", flush=True)
+        return "result"
 
-while True:
-    if status.exists():
-        # Status is generated after completion; stream events below for live view.
-        pass
+    if kind != "step_update":
+        return None
 
-    if events.exists():
-        with events.open(errors="replace") as f:
-            f.seek(pos)
-            for raw in f:
-                pos = f.tell()
-                try:
-                    ev = json.loads(raw)
-                except Exception:
-                    continue
+    step = event.get("step_update") or {}
+    info = step.get("tool_info") or {}
 
-                typ = ev.get("event")
-                if typ == "init":
-                    i = ev.get("init") or {}
-                    print(f"🚀 START  agent={i.get('agent','-')} model={i.get('model','-')} cwd={i.get('cwd','-')}", flush=True)
+    if step.get("step_type") == "tool":
+        name = step.get("tool_name") or info.get("name") or "tool"
+        params = info.get("parameters") or step.get("parameters") or {}
+        print(f"🔧 {name:<26} {clip(redact(json.dumps(params, ensure_ascii=False)), 400)}",
+              flush=True)
+        if info.get("error"):
+            print(f"   ❌ {clip(redact(json.dumps(info['error'], ensure_ascii=False)), 400)}",
+                  flush=True)
 
-                elif typ == "step_update":
-                    s = ev.get("step_update") or {}
-                    if s.get("step_type") == "tool":
-                        info = s.get("tool_info") or {}
-                        name = s.get("tool_name") or info.get("name") or "tool"
-                        params = info.get("parameters") or {}
-                        txt = redact(json.dumps(params, ensure_ascii=False))
-                        if len(txt) > 500: txt = txt[:500] + "..."
-                        print(f"🔧 {name}  {txt}", flush=True)
-                        if info.get("error"):
-                            print(f"   ❌ {redact(json.dumps(info['error'], ensure_ascii=False))[:500]}", flush=True)
+    for agent in (step.get("subagent_info") or {}).get("subagents", []) or []:
+        print(f"🤖 SUBAGENT  {agent.get('type_name', '-')} role={agent.get('role', '-')} "
+              f"id={agent.get('conversation_id', '-')}", flush=True)
 
-                    sub = s.get("subagent_info")
-                    if sub:
-                        for a in sub.get("subagents", []) or []:
-                            print(
-                                f"🤖 SUBAGENT  {a.get('type_name','-')} "
-                                f"role={a.get('role','-')} "
-                                f"id={a.get('conversation_id','-')}",
-                                flush=True
-                            )
+    if step.get("step_type") == "agent_response":
+        text = clip(redact(step.get("text_delta") or step.get("text") or ""), 700)
+        if text:
+            print(f"💬 {text}", flush=True)
 
-                    if s.get("step_type") == "agent_response":
-                        t = redact(s.get("text_delta","")).strip().replace("\n"," ")
-                        if t:
-                            print(f"💬 {t[:700]}", flush=True)
+    usage = step.get("usage")
+    if usage:
+        print(f"📊 tokens={usage.get('total_tokens', 0)} "
+              f"(in={usage.get('input_tokens', 0)} out={usage.get('output_tokens', 0)} "
+              f"thinking={usage.get('thinking_tokens', 0)})", flush=True)
+    return None
 
-                    usage = s.get("usage")
-                    if usage:
-                        print(
-                            f"📊 tokens={usage.get('total_tokens',0)} "
-                            f"(in={usage.get('input_tokens',0)} "
-                            f"out={usage.get('output_tokens',0)} "
-                            f"thinking={usage.get('thinking_tokens',0)})",
-                            flush=True
-                        )
 
-                elif typ == "result":
-                    r = ev.get("result") or {}
-                    u = r.get("usage") or {}
-                    key = json.dumps(r, sort_keys=True)
-                    if key not in seen_results:
-                        seen_results.add(key)
-                        print(
-                            f"\n✅ FINISHED status={r.get('status','-')} "
-                            f"turns={r.get('num_turns',0)} "
-                            f"duration={r.get('duration_seconds',0)}s "
-                            f"total_tokens={u.get('total_tokens',0)} "
-                            f"thinking={u.get('thinking_tokens',0)}",
-                            flush=True
-                        )
-                        print(f"Result: {run/'result.json'}", flush=True)
-                        sys.exit(0)
+def follow(path, stop_after_idle):
+    """Tail one attempt's event file until its result arrives or it goes quiet."""
+    pos = 0
+    idle = 0.0
+    while True:
+        saw_data = False
+        if path.exists():
+            with path.open(errors="replace") as handle:
+                handle.seek(pos)
+                for line in handle:
+                    if not line.endswith("\n"):
+                        break
+                    pos = handle.tell()
+                    saw_data = True
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    if render(event) == "result":
+                        return True
+        idle = 0.0 if saw_data else idle + 0.5
+        if idle >= stop_after_idle:
+            return False
+        time.sleep(0.5)
 
-    if stderr.exists() and stderr.stat().st_size:
-        # Only show the last small diagnostic tail when the process is done,
-        # avoiding noise and accidentally surfacing secrets.
-        pass
 
-    time.sleep(0.5)
+def main():
+    run = pick_run()
+    if not run:
+        print("No Gemini runs found.")
+        return 1
+
+    print(f"📡 Gemini run: {run.name}")
+    print(f"   logs: {run}")
+    print("   Ctrl+C to stop watching.\n")
+
+    attempt = 1
+    while True:
+        events = run / f"events-{attempt}.ndjson"
+        legacy = run / "events.ndjson"
+        if not events.exists() and legacy.exists() and attempt == 1:
+            events = legacy
+
+        print(f"── attempt {attempt} ──", flush=True)
+        finished = follow(events, stop_after_idle=1800)
+
+        verdict = run / "verdict.json"
+        if verdict.exists():
+            try:
+                data = json.loads(verdict.read_text())
+                if data.get("pass"):
+                    print("\n🟢 GATE PASS", flush=True)
+                    return 0
+                print("\n🔴 GATE FAIL  " + "; ".join(data.get("reasons", [])), flush=True)
+            except Exception:
+                pass
+
+        if not finished:
+            return 0
+
+        nxt = run / f"events-{attempt + 1}.ndjson"
+        waited = 0.0
+        while not nxt.exists() and waited < 20:
+            time.sleep(0.5)
+            waited += 0.5
+        if not nxt.exists():
+            return 0
+        attempt += 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

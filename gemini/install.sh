@@ -11,14 +11,12 @@ BACKUP_ROOT="$HOME/.config/gemini-skill/backups/$(date +%Y%m%d-%H%M%S)"
 BACKED=0
 
 backup() {
-  local dst="$1"
-  if [[ -e "$dst" ]]; then
-    BACKED=1
-    mkdir -p "$BACKUP_ROOT"
-    local safe="${dst#/}"
-    safe="${safe//\//_}"
-    cp -a "$dst" "$BACKUP_ROOT/$safe"
-  fi
+  local target="$1"
+  [[ -e "$target" ]] || return 0
+  BACKED=1
+  mkdir -p "$BACKUP_ROOT"
+  local safe="${target#/}"
+  cp -a "$target" "$BACKUP_ROOT/${safe//\//_}"
 }
 
 install_file() {
@@ -28,57 +26,61 @@ install_file() {
   cp "$src" "$dst"
 }
 
-mkdir -p "$CLAUDE_DIR/references" "$CLAUDE_DIR/scripts" "$GEMINI_DIR" "$BIN_DIR"
+mkdir -p "$CLAUDE_DIR/references" "$CLAUDE_DIR/scripts/lib" "$GEMINI_DIR" "$BIN_DIR"
 
-install_file "$ROOT/claude-skill/SKILL.md" "$CLAUDE_DIR/SKILL.md"
-install_file "$ROOT/claude-skill/references/devops.md" "$CLAUDE_DIR/references/devops.md"
+install_file "$ROOT/claude-skill/SKILL.md"                      "$CLAUDE_DIR/SKILL.md"
+install_file "$ROOT/claude-skill/references/devops.md"          "$CLAUDE_DIR/references/devops.md"
 install_file "$ROOT/claude-skill/references/result-schema.json" "$CLAUDE_DIR/references/result-schema.json"
-install_file "$ROOT/claude-skill/scripts/run-gemini.sh" "$CLAUDE_DIR/scripts/run-gemini.sh"
+install_file "$ROOT/claude-skill/scripts/run-gemini.sh"         "$CLAUDE_DIR/scripts/run-gemini.sh"
+for f in "$ROOT"/claude-skill/scripts/lib/*.py; do
+  install_file "$f" "$CLAUDE_DIR/scripts/lib/$(basename "$f")"
+done
 chmod +x "$CLAUDE_DIR/scripts/run-gemini.sh"
 
-for f in "$ROOT"/gemini-agents/*.md; do
-  install_file "$f" "$GEMINI_DIR/$(basename "$f")"
+# Antigravity discovers a global agent at ~/.gemini/config/agents/<name>/agent.md.
+# Flat <name>.md files in that directory are NOT loaded — remove any left by an
+# earlier version of this installer, or the orchestrator silently never appears.
+for dir in "$ROOT"/gemini-agents/*/; do
+  name="$(basename "$dir")"
+  [[ -f "$dir/agent.md" ]] || continue
+  if [[ -f "$GEMINI_DIR/$name.md" ]]; then
+    backup "$GEMINI_DIR/$name.md"
+    rm -f "$GEMINI_DIR/$name.md"
+    echo "  removed stale flat agent file: $name.md"
+  fi
+  install_file "$dir/agent.md" "$GEMINI_DIR/$name/agent.md"
 done
 
-install_file "$ROOT/bin/gemini-watch" "$BIN_DIR/gemini-watch"
-install_file "$ROOT/bin/gemini-status" "$BIN_DIR/gemini-status"
-install_file "$ROOT/bin/gemini-runs" "$BIN_DIR/gemini-runs"
-chmod +x "$BIN_DIR/gemini-watch" "$BIN_DIR/gemini-status" "$BIN_DIR/gemini-runs"
+for cmd in gemini-watch gemini-status gemini-runs; do
+  install_file "$ROOT/bin/$cmd" "$BIN_DIR/$cmd"
+  chmod +x "$BIN_DIR/$cmd"
+done
 
-echo "Installed custom /gemini Skill:"
-echo "  $CLAUDE_DIR"
-
-echo "Installed Antigravity Gemini agents:"
-echo "  $GEMINI_DIR"
-
-echo "Installed monitoring commands:"
-echo "  $BIN_DIR/gemini-watch"
-echo "  $BIN_DIR/gemini-status"
-echo "  $BIN_DIR/gemini-runs"
+echo
+echo "Installed /gemini Skill:            $CLAUDE_DIR"
+echo "Installed Antigravity agents:       $GEMINI_DIR/<name>/agent.md"
+echo "Installed monitoring commands:      $BIN_DIR/{gemini-watch,gemini-status,gemini-runs}"
 
 if [[ "$BACKED" -eq 1 ]]; then
   echo
-  echo "Existing Gemini files backed up to:"
-  echo "  $BACKUP_ROOT"
+  echo "Existing files backed up to: $BACKUP_ROOT"
 fi
 
-echo
-echo "Caveman was NOT modified."
+cat <<'EOF'
 
-echo
-echo "Verify:"
-echo "  agy models"
-echo "  agy agents"
+Caveman was NOT modified.
 
-echo
-echo "Use:"
-echo "  /gemini ultra <task>"
-echo "  /caveman /gemini ultra <task>"
+Verify:
+  agy models
+  agy agents          # gemini-orchestrator and the 8 workers should be listed
 
-echo
-echo "Monitor from another terminal:"
-echo "  gemini-watch"
+Use:
+  /gemini ultra <task>
+  /caveman /gemini ultra <task>
 
-echo
-echo "For fully automated permissions only when intentionally desired:"
-echo "  export AGY_UNSAFE=1"
+Monitor live, from another terminal:
+  gemini-watch
+
+Fully automated permissions, only when intentionally desired:
+  export AGY_UNSAFE=1
+EOF

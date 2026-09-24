@@ -1,6 +1,6 @@
 ---
 name: gemini
-description: Delegate bounded implementation, documentation, testing, research, Git/GitLab, SSH, Docker, Docker Compose and CI/CD work to Gemini through Antigravity. Works alone or stacked with other Skills; use /gemini lite, /gemini full, or /gemini ultra.
+description: Delegate bounded implementation, documentation, testing, research, Git/GitLab, SSH, Docker, Docker Compose and CI/CD work to Gemini through Antigravity. Claude architects, Gemini implements, an automated gate enforces completion. Works alone or stacked with other Skills; use /gemini lite, /gemini full, or /gemini ultra.
 argument-hint: "[lite|full|ultra] <task>"
 user-invocable: true
 disable-model-invocation: true
@@ -8,385 +8,223 @@ disable-model-invocation: true
 
 # Gemini Delegator
 
-Gemini is the execution layer for Claude.
-
-## Mission
-
-Spend Gemini tokens on bounded execution so Claude spends fewer tokens on routine
-work, while keeping Claude responsible for difficult judgment and final quality.
+Claude is the architect. Gemini is the implementer. A deterministic gate — not
+Claude, and not Gemini's own opinion — decides whether the work is finished.
 
 ```text
-Claude → WHAT / WHY / architecture / acceptance criteria
-Gemini → bounded HOW / implementation / tests / docs / DevOps
-Claude → small Git-based final gate
+Claude  → WHAT / WHY / scope / acceptance criteria
+Gemini  → HOW / implementation / tests / docs / DevOps
+Gate    → did the workspace actually change, is the diff free of stubs,
+          do the verification commands exit 0?  (loops Gemini back if not)
+Claude  → short risk-scaled review of the Git delta
 ```
+
+The gate's retry loop runs inside the shell script. A Gemini attempt that fails
+the gate is sent back with the exact failures **without costing Claude a single
+token**.
 
 ## Modes
 
-```text
-LITE  = least Gemini use
-FULL  = balanced
-ULTRA = maximum useful Gemini delegation
+| Mode | Model | Attempts | Use for |
+|---|---|---|---|
+| `lite` | `gemini-3.8-flash-low` | 1 | trivial, mechanical, throwaway |
+| `full` | `gemini-3.8-flash-medium` | 2 | normal bounded work |
+| `ultra` | `gemini-3.8-flash-high` | 3 | real implementation; max delegation |
+
+In `ultra`, if attempts 1 and 2 both fail the gate, the final attempt escalates
+to `gemini-3.1-pro-high` automatically.
+
+Default to `ultra` when the user did not say otherwise.
+
+## Claude's token budget
+
+**In ultra, do not read the codebase to write the contract.** Recon is
+delegation too — send a read-only research contract first and get back a compact
+briefing:
+
+```bash
+~/.claude/skills/gemini/scripts/run-gemini.sh ultra --readonly <<'EOF'
+OBJECTIVE: Recon only. Do not change any file.
+QUESTION: Where is order pricing computed, and what validates a discount code?
+RETURN: path:line citations, the call path, the test command for this module.
+EOF
 ```
 
-Ultra is the Claude-token economy mode.
+Claude should open a source file only when the gate result or a risk trigger
+makes it necessary. Reading files "to be safe" is the single largest Claude
+token cost in this workflow.
 
-## Stacking
+## Running a task
 
-This Skill can be explicitly stacked with another Skill:
+Pipe the contract on stdin. Everything after a line reading `===VERIFY===` is
+treated as shell commands the gate will run:
 
-```text
-/caveman /gemini ultra
-<task>
-```
-
-When stacked, this Skill does not replace or modify the other Skill.
-
-The trailing task is shared.
-
-## Ultra behavior
-
-For meaningful tasks:
-
-1. Claude determines the architecture and boundaries.
-2. Gemini receives a bounded execution contract.
-3. Gemini orchestrates its own specialized subagents when useful.
-4. Gemini implements, tests, self-reviews, and fixes routine issues.
-5. Gemini returns one compact result.
-6. Claude reviews the Git delta and only expands review when risk/evidence requires it.
-
-Do not make Claude perform a full review of every Gemini change.
-
-## Delegate aggressively in Ultra
-
-Good candidates:
-- Java/Spring implementation
-- JavaScript/TypeScript/React implementation
-- DTOs/entities/mappers
-- repository/service/controller methods with clear requirements
-- Javadoc/JSDoc/TSDoc
-- tests
-- repetitive refactors
-- .gitlab-ci.yml
-- Docker/Docker Compose
-- GitLab API/CI work
-- SSH/Linux diagnostics
-- bounded remote fixes
-- pipeline troubleshooting
-- logs and documentation research
-
-Keep in Claude:
-- architecture
-- ambiguity
-- major business-rule decisions
-- security decisions
-- broad refactor strategy
-- irreversible/consequential decisions
-- final integration judgment
-
-## Batching
-
-If several bounded tasks are independent, ask one Gemini orchestrator run to
-handle them and use Gemini subagents internally.
-
-Prefer:
-
-```text
-Claude → one Gemini orchestrator
-             ├─ Java
-             ├─ frontend
-             ├─ tests
-             └─ docs
-```
-
-over multiple sequential Claude→Gemini calls.
-
-## Gemini prompt contract
-
-Give Gemini:
-
-```text
+```bash
+~/.claude/skills/gemini/scripts/run-gemini.sh ultra <<'EOF'
 OBJECTIVE:
 <one concrete outcome>
 
 CONTEXT:
-<only necessary context>
+<only what Gemini cannot cheaply discover itself>
 
 SCOPE:
-<files/modules/servers/projects>
+<files / modules / servers / projects it may touch>
 
 REQUIREMENTS:
-- ...
+- <numbered, testable, complete>
 
 CONSTRAINTS:
-- inspect existing patterns
-- modify only assigned scope
+- inspect existing patterns before writing
+- modify only the assigned scope
 - do not redesign unrelated code
 
 ACCEPTANCE:
-- ...
+- <observable outcome, not "code written">
 
-VERIFY:
-- ...
-
-RETURN:
-- status
-- changed targets
-- verification
-- risks / unknowns
+===VERIFY===
+./mvnw -q -pl orders test
+./mvnw -q -pl orders spotless:check
+EOF
 ```
 
-Do not ask Gemini for chain-of-thought.
+### The VERIFY block is the whole point
 
-## Gemini-side verification
+The gate only has teeth when it has commands to run. Always supply them.
 
-Gemini should:
-- inspect its own diff
-- run deterministic checks
-- use its review worker when useful
-- fix routine findings before returning
+- Pick the narrowest command that would actually fail if the work were wrong.
+- Prefer a scoped test over a full build; prefer a real test over a lint.
+- Never write a command that cannot fail (`echo ok`, `ls`, `true`).
+- No commands available? Say so in the digest — the gate then only checks the
+  diff, and Claude's review must be correspondingly deeper.
 
-Claude should not duplicate that entire review.
+Flags: `--readonly` (recon; skips the "nothing changed" check),
+`--allow-todo` (only when a TODO is genuinely the deliverable).
 
-## Claude-side Git review
+## What comes back, and what you show the user
 
-When Gemini changes the current workspace:
+The script prints, in order:
 
-```bash
-git status --short
-git diff --stat
-git diff --check
-git diff --unified=3
-```
+1. one **activity digest** per attempt — a bounded, redacted line-per-action
+   trace of what Gemini actually did
+2. the **gate report** — diffstat, per-command pass/fail, stub hits, verdict
+3. one compact **JSON result** with a `gate` field
 
-Review changed hunks first.
+**Relay the digest and the gate report to the user verbatim, in a fenced code
+block, before your own commentary.** That trace is the user's only window into
+Gemini's work; summarizing it away defeats the purpose. It is already capped
+(~40 lines per attempt), so it is cheap to pass through.
 
-Only inspect surrounding code when:
-- a hunk is ambiguous
-- tests fail
-- Gemini reports uncertainty
-- the change is medium/high risk
-- security/auth/data/production behavior is involved
+Then add your own short verdict: what changed, what you checked, what you did
+not check, and any risk you are carrying.
 
-Do not automatically open whole modified files.
-
-## Review levels
-
-LOW:
-- docs/comments
-- boilerplate
-- simple DTO/mapper
-- isolated mechanical changes
-
-→ rely on deterministic checks + compact Git delta.
-
-MEDIUM:
-- normal service/repository/controller
-- React changes
-- Docker Compose
-- CI changes
-
-→ inspect changed hunks and affected symbols.
-
-HIGH:
-- production
-- SSH writes on critical servers
-- database mutation
-- branch protection
-- runner changes
-- credentials/secrets
-- authentication/authorization
-- firewall/network exposure
-- destructive commands
-- broad refactors
-
-→ deeper Claude verification.
-
-## DevOps
-
-Gemini is a first-class DevOps worker.
-
-Supported:
-- SSH
-- Linux/systemd/journalctl
-- Git
-- GitLab REST API/glab
-- CI/CD variables and environment scopes
-- protected branches
-- runners
-- environments
-- pipelines/jobs
-- CI Lint
-- Docker
-- Docker Compose
-- deployment scripts
-- remote logs
-
-Normal remote workflow:
-
-```text
-inspect → change → verify
-```
-
-For consequential changes:
-
-```text
-TARGET
-ACTION
-CURRENT STATE
-EXPECTED STATE
-ROLLBACK
-POST-CHECK
-```
-
-## Credential safety
-
-Use existing credential mechanisms.
-
-Never print or return:
-- GitLab tokens
-- SSH private keys
-- passwords
-- API secrets
-- masked CI variable values
-
-Do not put secrets into prompts.
-
-The local run logs are sanitized by the helper tools, but do not treat the
-sanitizer as a substitute for safe commands.
-
-## Human-readable monitoring WITHOUT Claude token cost
-
-Do NOT pipe Gemini `stream-json` into Claude's stdout for monitoring.
-
-Instead, the helper script stores the stream locally:
-
-```text
-~/.local/state/gemini-skill/runs/<run-id>/
-  events.ndjson
-  stderr.log
-  status.log
-  result.json
-```
-
-Then, from your own terminal:
+For the live stream, from their own terminal:
 
 ```bash
 gemini-watch
 ```
 
-or:
+`gemini-status` for a one-shot summary, `gemini-runs` to list recent runs. Those
+read the full event log on disk, which never enters Claude's context.
+
+## Claude's review, scaled to risk
+
+Start from the delta, never from whole files:
 
 ```bash
-gemini-watch <run-id>
+git diff --stat && git diff --check && git diff --unified=3
 ```
 
-This lets you see:
-- orchestrator start
-- tools
-- commands
-- subagents
-- subagent completion
-- errors
-- final status
-- Gemini token usage
+| Risk | Review |
+|---|---|
+| **low** — docs, comments, boilerplate, DTOs, mechanical edits | gate + diffstat only |
+| **medium** — services, repositories, controllers, React, Compose, CI | read the changed hunks |
+| **high** — production, credentials, auth, data mutation, branch protection, runners, network exposure, destructive commands, broad refactors | read hunks and surrounding code, verify claims independently |
 
-Those events stay outside Claude's conversation.
+Open surrounding code only when a hunk is ambiguous, the gate failed, Gemini
+reported a finding or `needs_claude`, or the change is high risk.
 
-For a one-shot status:
+Do not re-review what the gate already proved.
 
-```bash
-gemini-status
-```
+## Delegate vs. keep
 
-For all recent runs:
+**Delegate:** Java/Spring, JS/TS/React, DTOs, entities, mappers, service and
+repository methods, Javadoc/JSDoc/TSDoc, tests, repetitive refactors,
+`.gitlab-ci.yml`, Docker and Compose, GitLab API/CI work, SSH and Linux
+diagnostics, bounded remote fixes, pipeline troubleshooting, log and
+documentation research, and all reconnaissance.
 
-```bash
-gemini-runs
-```
+**Keep in Claude:** architecture, genuine ambiguity, business-rule decisions,
+security decisions, broad refactor strategy, irreversible decisions, final
+integration judgment.
 
-## Agy execution
+## Batching
 
-The helper invokes:
-
-```bash
-agy \
-  --agent "${AGY_GEMINI_AGENT:-gemini-orchestrator}" \
-  --effort "$EFFORT" \
-  -p "$PROMPT" \
-  --output-format stream-json
-```
-
-If a model is configured:
-
-```bash
---model "$AGY_GEMINI_MODEL"
-```
-
-The full event stream is written to disk and only the final compact structured
-result is returned to Claude.
-
-## Permissions
-
-Do not use `--dangerously-skip-permissions` by default.
-
-If the user deliberately wants fully automated execution, set:
-
-```bash
-export AGY_UNSAFE=1
-```
-
-The helper then adds the flag.
-
-For a safer setup, configure Antigravity's scoped permissions instead.
-
-## Exact prompt invocation rule
-
-Always pass the whole prompt as the value of `-p`:
-
-```bash
-agy -p "$(cat prompt.txt)"
-```
-
-Never put another option immediately after `-p` without a prompt value.
-
-Correct:
-
-```bash
-agy --effort high -p "$(cat prompt.txt)"
-```
-
-Incorrect:
-
-```bash
-agy -p --effort high "$(cat prompt.txt)"
-```
-
-## Failures
-
-If Gemini fails:
-- inspect the local run log
-- retry only when the cause is clear
-- do not blindly repeat
-- return `needs_claude` for architectural/security ambiguity
-
-## Direct use
+Independent bounded tasks go in **one** orchestrator run, not several sequential
+ones — the orchestrator fans out to its own subagents, and each extra Claude
+round trip is pure overhead.
 
 ```text
-/gemini lite <task>
-/gemini full <task>
-/gemini ultra <task>
+Claude → one orchestrator ─┬─ java worker
+                           ├─ web worker
+                           ├─ test worker
+                           └─ docs worker
 ```
 
-Combined with Caveman:
+## Failure handling
+
+`status: failed` with `gate.pass: false` means Gemini exhausted its attempts.
+Read `gate.reasons` first — it names the exact failure.
+
+- Failing verification command → inspect the hunk it covers; usually a real bug.
+- "No file changed" → the contract was unclear or the scope was wrong. Rewrite
+  the contract; do not just re-run it.
+- Unfinished-code markers → the requirements were too large for one contract.
+  Split them.
+- `needs_claude` → Gemini hit real ambiguity. Decide, then re-delegate with the
+  decision written into the contract.
+
+Never re-run an identical contract that already failed.
+
+## Safety
+
+Never put a secret in a contract. Never ask Gemini to return one. The digest and
+the run logs are redacted, but redaction is a backstop, not a strategy.
+
+`--dangerously-skip-permissions` is off by default. `export AGY_UNSAFE=1` only
+when the user deliberately wants unattended execution; prefer Antigravity's
+scoped permissions.
+
+High-risk operations (production, database mutation, branch protection, runner
+config, secrets, network exposure) need explicit user authorization before the
+contract is sent — confirm in chat first.
+
+## Tuning
+
+| Variable | Effect |
+|---|---|
+| `AGY_GEMINI_MODEL` | pin a model; disables auto-escalation |
+| `GEMINI_MAX_ATTEMPTS` | override the per-mode attempt budget |
+| `GEMINI_ESCALATE_MODEL` | final-attempt model (default `gemini-3.1-pro-high`) |
+| `GEMINI_DIGEST_LINES` | digest lines per attempt (default 40 in ultra) |
+| `GEMINI_VERIFY_TIMEOUT` | seconds per verification command (default 900) |
+| `GEMINI_ALLOW_TODO` | disable the stub scan |
+| `AGY_GEMINI_AGENT` | orchestrator agent name |
+| `AGY_UNSAFE=1` | add `--dangerously-skip-permissions` |
+
+`references/devops.md` holds the DevOps playbook. Read it only when the task is
+actually DevOps.
+
+## Stacking
 
 ```text
 /caveman /gemini ultra
 <task>
 ```
 
+This Skill does not replace or modify the other Skill. The trailing task is
+shared.
+
 ## Final principle
 
-> Let Gemini spend tokens on execution. Let Claude spend tokens on decisions.
-> Keep Gemini's live activity outside Claude's context, and keep Claude's review
-> focused on Git deltas.
+> Gemini spends tokens on execution. The gate spends compute on proof.
+> Claude spends tokens only on decisions — and shows the user the trace.

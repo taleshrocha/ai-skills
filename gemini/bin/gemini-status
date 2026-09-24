@@ -1,26 +1,65 @@
 #!/usr/bin/env python3
-import json, os, sys
+"""One-shot summary of a Gemini run: attempts, gate verdict, final result."""
+
+import json
+import os
+import sys
 from pathlib import Path
-ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home()/".local/state")) / "gemini-skill/runs"
 
-def latest():
-    if not ROOT.exists(): return None
-    ds=[p for p in ROOT.iterdir() if p.is_dir()]
-    return max(ds,key=lambda p:p.stat().st_mtime) if ds else None
+ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "gemini-skill/runs"
 
-arg=sys.argv[1] if len(sys.argv)>1 else "latest"
-run=latest() if arg=="latest" else ROOT/arg
-if not run or not run.exists():
-    print("No Gemini run found.")
-    sys.exit(1)
 
-print(f"RUN   {run.name}")
-print(f"PATH  {run}")
-status=run/"status.log"
-result=run/"result.json"
-if status.exists():
-    print("\nSTATUS")
-    print(status.read_text(errors="replace")[-6000:])
-if result.exists():
-    print("RESULT")
-    print(result.read_text(errors="replace"))
+def load(path):
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else "latest"
+    if arg == "latest":
+        dirs = [p for p in ROOT.iterdir() if p.is_dir()] if ROOT.exists() else []
+        run = max(dirs, key=lambda p: p.stat().st_mtime) if dirs else None
+    else:
+        run = ROOT / arg
+
+    if not run or not run.exists():
+        print("No Gemini run found.")
+        return 1
+
+    print(f"RUN   {run.name}")
+    print(f"PATH  {run}")
+
+    status = run / "status.log"
+    if status.exists():
+        print("\nATTEMPTS")
+        print(status.read_text(errors="replace").rstrip())
+
+    verdict = load(run / "verdict.json")
+    if verdict:
+        print("\nGATE  " + ("PASS" if verdict.get("pass") else "FAIL"))
+        for reason in verdict.get("reasons", []):
+            print(f"  - {reason}")
+        for item in verdict.get("verify", []):
+            mark = "ok  " if item.get("exit") == 0 else "FAIL"
+            print(f"  [{mark}] {item.get('command')}")
+        for stub in verdict.get("stubs", [])[:10]:
+            print(f"  stub: {stub}")
+
+    result = load(run / "result.json")
+    if result:
+        print("\nRESULT")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    stderrs = sorted(run.glob("stderr-*.log"))
+    if stderrs and stderrs[-1].stat().st_size:
+        print(f"\nSTDERR ({stderrs[-1].name}, last 20 lines)")
+        print("\n".join(stderrs[-1].read_text(errors="replace").splitlines()[-20:]))
+
+    print(f"\nReplay the full stream:  gemini-watch {run.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

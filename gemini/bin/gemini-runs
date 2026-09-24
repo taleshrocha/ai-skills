@@ -1,19 +1,36 @@
 #!/usr/bin/env python3
+"""List recent Gemini runs with their gate verdict."""
+
+import json
 import os
 from pathlib import Path
 
-ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home()/".local/state")) / "gemini-skill/runs"
+ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "gemini-skill/runs"
+
 if not ROOT.exists():
     print("No Gemini runs.")
     raise SystemExit
 
-for p in sorted((x for x in ROOT.iterdir() if x.is_dir()), key=lambda x:x.stat().st_mtime, reverse=True)[:20]:
-    r = p/"result.json"
-    state = "running"
-    if r.exists():
-        try:
-            import json
-            state = json.loads(r.read_text()).get("status","completed")
-        except Exception:
-            state = "completed"
-    print(f"{p.name:32} {state:16} {p}")
+runs = sorted((p for p in ROOT.iterdir() if p.is_dir()),
+              key=lambda p: p.stat().st_mtime, reverse=True)[:20]
+
+if not runs:
+    print("No Gemini runs.")
+    raise SystemExit
+
+print(f"{'RUN':<26} {'STATUS':<13} {'GATE':<6} {'TRIES':<6} PATH")
+for run in runs:
+    status = "running"
+    try:
+        status = json.loads((run / "result.json").read_text()).get("status", "completed")
+    except Exception:
+        pass
+
+    gate = "-"
+    try:
+        gate = "pass" if json.loads((run / "verdict.json").read_text()).get("pass") else "fail"
+    except Exception:
+        pass
+
+    tries = len(list(run.glob("events-*.ndjson"))) or 1
+    print(f"{run.name:<26} {status:<13} {gate:<6} {tries:<6} {run}")

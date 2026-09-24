@@ -1,21 +1,34 @@
 {
-  "version": "12",
+  "version": "13",
   "modifies_caveman": false,
-  "claude_skill": "/mnt/data/gemini-skill-v12/claude-skill/SKILL.md",
-  "gemini_agents": [
-    "gemini-devops-worker.md",
-    "gemini-docs-worker.md",
-    "gemini-gitlab-worker.md",
-    "gemini-java-worker.md",
-    "gemini-orchestrator.md",
-    "gemini-research-worker.md",
-    "gemini-review-worker.md",
-    "gemini-test-worker.md",
-    "gemini-web-worker.md"
+  "claude_skill": "claude-skill/SKILL.md",
+  "claude_skill_scripts": [
+    "claude-skill/scripts/run-gemini.sh",
+    "claude-skill/scripts/lib/common.py",
+    "claude-skill/scripts/lib/digest.py",
+    "claude-skill/scripts/lib/gate.py"
   ],
-  "monitor_commands": [
-    "gemini-watch",
-    "gemini-status",
-    "gemini-runs"
-  ]
+  "claude_skill_references": [
+    "claude-skill/references/devops.md",
+    "claude-skill/references/result-schema.json"
+  ],
+  "gemini_agent_layout": "~/.gemini/config/agents/<name>/agent.md",
+  "gemini_agents": [
+    "gemini-orchestrator",
+    "gemini-devops-worker",
+    "gemini-docs-worker",
+    "gemini-gitlab-worker",
+    "gemini-java-worker",
+    "gemini-research-worker",
+    "gemini-review-worker",
+    "gemini-test-worker",
+    "gemini-web-worker"
+  ],
+  "monitor_commands": ["gemini-watch", "gemini-status", "gemini-runs"],
+  "models": {
+    "lite": "gemini-3.8-flash-low",
+    "full": "gemini-3.8-flash-medium",
+    "ultra": "gemini-3.8-flash-high",
+    "escalation": "gemini-3.1-pro-high"
+  }
 }

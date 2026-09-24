@@ -1,153 +1,181 @@
-# Gemini Skill v12 — standalone
+# Gemini Delegator
 
-This package modifies **only the custom `/gemini` Skill and Gemini/Antigravity agents**.
-
-It does NOT install, replace, edit, or configure `/caveman`.
-
-## Goal
-
-Use Gemini as a real external execution layer while keeping Gemini's live
-progress OUT of Claude's context.
+Claude architects. Gemini implements. A deterministic gate — not Claude, and not
+Gemini's own opinion — decides whether the work is actually finished.
 
 ```text
-Claude
-  ↓
-/gemini
-  ↓
-agy stream-json
-  ↓
-local run log
-  ↓
-Gemini orchestrator
-  ├─ Java
-  ├─ JS/TS
-  ├─ tests
-  ├─ docs
-  └─ DevOps
-  ↓
-self-review + verification
-  ↓
-compact result → Claude
+Claude  → WHAT / WHY / scope / acceptance criteria
+Gemini  → HOW / implementation / tests / docs / DevOps
+Gate    → did the workspace change, is the diff free of stubs,
+          do the verification commands exit 0?   ← loops Gemini back if not
+Claude  → short risk-scaled review of the Git delta
 ```
+
+The retry loop lives in the shell script. When Gemini stops early, the gate
+sends it back with the exact failures **without spending a single Claude token**.
 
 ## Install
 
 ```bash
-unzip gemini-skill-v12-only.zip
-cd gemini-skill-v12
 ./install.sh
 ```
 
-The installer:
-- installs `~/.claude/skills/gemini`
-- installs global Antigravity agents under `~/.gemini/config/agents`
-- installs `gemini-watch`, `gemini-status`, and `gemini-runs` into `~/.local/bin`
-- backs up existing Gemini files before replacing them
-- never touches `~/.claude/skills/caveman`
+Installs the Skill to `~/.claude/skills/gemini`, the agents to
+`~/.gemini/config/agents/<name>/agent.md`, and `gemini-watch`, `gemini-status`
+and `gemini-runs` to `~/.local/bin`. Existing files are backed up first.
+Caveman is not touched.
+
+Verify with `agy agents` — `gemini-orchestrator` must be listed.
+
+> Antigravity only discovers a global agent at `<name>/agent.md`. Flat
+> `<name>.md` files in the agents directory are silently ignored; the installer
+> removes any left by an older version.
 
 ## Use
 
-Direct:
-
 ```text
 /gemini ultra <task>
+/caveman /gemini ultra <task>
 ```
 
-Stacked:
+| Mode | Model | Attempts |
+|---|---|---|
+| `lite` | `gemini-3.8-flash-low` | 1 |
+| `full` | `gemini-3.8-flash-medium` | 2 |
+| `ultra` | `gemini-3.8-flash-high` | 3, last one escalating to `gemini-3.1-pro-high` |
 
-```text
-/caveman /gemini ultra
-<task>
-```
+Gemini 3.8 Flash leads the public coding lane and is built for long-horizon
+agent loops, at a fraction of 3.1 Pro's price — so Flash carries the work and
+Pro is held in reserve for the attempt that already failed twice.
 
-Modes:
-- `lite`: little Gemini
-- `full`: balanced
-- `ultra`: maximum useful Gemini delegation and best Claude-token economy
-
-## Human-readable monitoring with no extra Claude context
-
-When `/gemini` runs, its `stream-json` output is saved here:
-
-```text
-~/.local/state/gemini-skill/runs/<run-id>/
-```
-
-The Claude process receives only the final compact result.
-
-From another terminal:
+## Calling the runner directly
 
 ```bash
-gemini-watch
+~/.claude/skills/gemini/scripts/run-gemini.sh ultra <<'EOF'
+OBJECTIVE:
+  Implement pagination on the orders endpoint.
+
+SCOPE:
+  src/main/java/com/acme/orders/**
+
+REQUIREMENTS:
+  - page and size query parameters, defaults 0 and 20
+  - size capped at 100
+  - response carries total element count
+
+===VERIFY===
+./mvnw -q -pl orders test
+EOF
 ```
 
-or:
+Everything after `===VERIFY===` is a shell command the gate will run itself.
+Flags: `--readonly` for reconnaissance, `--allow-todo` when a TODO is the
+actual deliverable.
 
-```bash
-gemini-runs
-gemini-status
-gemini-watch <run-id>
-```
+### The VERIFY block is the whole mechanism
 
-You can see:
-- tools
-- commands
-- subagents
-- agent messages
-- token usage
-- final status
+The gate only has teeth when it has commands to run. Pick the narrowest command
+that would genuinely fail if the work were wrong. A command that cannot fail
+(`echo ok`, `true`) disables the gate while looking like it is enabled.
 
-Because this is read directly from the local log, the progress stream is not
-fed back into Claude and therefore does not consume additional Claude context.
+## Transparency
 
-## Credentials and permissions
+Every run prints, straight into the Claude conversation:
 
-Use normal existing credential sources.
-
-Do not put tokens or private keys in prompts.
-
-Default execution does not add `--dangerously-skip-permissions`.
-
-For deliberate full automation:
-
-```bash
-export AGY_UNSAFE=1
-```
-
-Prefer Antigravity's scoped permissions when possible.
-
-## Agy requirements
-
-The wrapper uses current headless features:
-- `-p`
-- `--agent`
-- `--effort`
-- `--model`
-- `--output-format stream-json`
-- `--json-schema` for the final structured response
-
-The stream format emits incremental tool/subagent/usage events, while the final
-result contains the terminal response and usage metadata.
-
-## Why this is more economical
-
-Previous design:
+1. an **activity digest** per attempt — one redacted line per action Gemini took
+2. the **gate report** — diffstat, per-command pass/fail, stub hits, verdict
+3. one compact **JSON result**
 
 ```text
-Gemini stream
-→ Claude stdout
-→ Claude consumes every progress event
+── gemini run 20260924-191332 · attempt 1 · ultra · model=gemini-3.8-flash-high ──
+  cmd       ls -la && git status
+  read      .../slugify.py, .../test_slugify.py  (x2)
+  write     .../slugify.py
+  cmd       python3 -m unittest -q
+  cmd       git status --short && git diff && git diff --check
+── gemini stopped: turns=4 wall=149s gemini_tokens=186486 ──
+  changed   1 file changed, 25 insertions(+), 2 deletions(-)
+  verify    [ok  ] python3 -m unittest -q
+  gate      PASS
 ```
 
-This version:
+The digest is capped (~40 lines per attempt) and credential-redacted, so full
+visibility stays cheap. The untruncated event stream never enters Claude's
+context — it is on disk:
+
+```bash
+gemini-watch            # live, follows every retry attempt
+gemini-status           # one-shot summary of the last run
+gemini-runs             # recent runs with their gate verdicts
+```
+
+## What the gate checks
+
+| Check | Fails when |
+|---|---|
+| workspace changed | Gemini reported success without touching a file |
+| stub scan | the new diff adds `TODO`, `FIXME`, `XXX`, `placeholder`, `not implemented`, `NotImplementedError`, `UnsupportedOperationException`, a stub comment or an empty `catch` |
+| verification | any declared command exits non-zero |
+
+Pre-existing markers in the working tree are ignored — only what this run
+introduced counts. On failure the gate writes the retry prompt itself, with the
+failing command's real output pasted in.
+
+`needs_claude` is an escalation, not a failure: the loop stops immediately and
+hands the decision back.
+
+## Keeping Claude's spend down
+
+- Claude does not read the codebase to write a contract. Reconnaissance is
+  delegated too, with `--readonly`.
+- Independent tasks go in one orchestrator run; it fans out to its own
+  subagents rather than costing extra Claude round trips.
+- Claude's review starts from `git diff --stat`, scaled to risk, and never
+  re-checks what the gate already proved.
+- AGY's result envelope (full response text plus the echoed JSON schema) is
+  stripped down to the eight contracted fields before Claude sees it.
+
+## Workers
+
+`gemini-orchestrator` delegates to `gemini-java-worker`, `gemini-web-worker`,
+`gemini-test-worker`, `gemini-docs-worker`, `gemini-devops-worker`,
+`gemini-gitlab-worker`, `gemini-research-worker` and `gemini-review-worker`.
+
+Workers run at `model: inherit`, so `--model` on the orchestrator sets the tier
+for the whole tree.
+
+## Configuration
+
+| Variable | Effect |
+|---|---|
+| `AGY_GEMINI_MODEL` | pin a model; disables auto-escalation |
+| `GEMINI_MAX_ATTEMPTS` | override the per-mode attempt budget |
+| `GEMINI_ESCALATE_MODEL` | final-attempt model (default `gemini-3.1-pro-high`) |
+| `GEMINI_DIGEST_LINES` | digest lines per attempt |
+| `GEMINI_VERIFY_TIMEOUT` | seconds per verification command (default 900) |
+| `GEMINI_ALLOW_TODO` | disable the stub scan |
+| `AGY_GEMINI_AGENT` | orchestrator agent name |
+| `AGY_UNSAFE=1` | add `--dangerously-skip-permissions` |
+
+## Safety
+
+Never put a secret in a contract. Digests and run logs are redacted, but
+redaction is a backstop, not a strategy. `--dangerously-skip-permissions` is
+off by default; prefer Antigravity's scoped permissions. High-risk operations —
+production, database mutation, branch protection, runner config, secrets,
+network exposure — need explicit authorization before the contract is sent.
+
+## Layout
 
 ```text
-Gemini stream
-→ local file
-→ gemini-watch (your terminal)
-
-final result
-→ Claude
+claude-skill/
+  SKILL.md                     loaded into Claude's context
+  references/devops.md         DevOps playbook, read on demand
+  references/result-schema.json enforced via agy --json-schema
+  scripts/run-gemini.sh        contract → attempts → gate → digest
+  scripts/lib/digest.py        event stream → digest + compact result
+  scripts/lib/gate.py          completion gate + retry-prompt author
+  scripts/lib/common.py        redaction and clipping
+gemini-agents/<name>/agent.md  orchestrator + 8 workers
+bin/                           gemini-watch, gemini-status, gemini-runs
 ```
-
-That is the intended architecture for token economy.

@@ -1,72 +1,50 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "status",
-    "risk",
-    "summary",
-    "changed",
-    "verified",
-    "review",
-    "findings",
-    "next"
-  ],
+  "required": ["status", "risk", "summary", "changed", "verified", "review", "findings", "next"],
   "properties": {
     "status": {
       "type": "string",
-      "enum": [
-        "success",
-        "failed",
-        "needs_claude"
-      ]
+      "enum": ["success", "failed", "needs_claude"],
+      "description": "success only if every verification command was actually run and exited 0. needs_claude for architectural, security or destructive-scope ambiguity."
     },
     "risk": {
       "type": "string",
-      "enum": [
-        "low",
-        "medium",
-        "high"
-      ]
+      "enum": ["low", "medium", "high"],
+      "description": "high for production, credentials, auth, data mutation, network exposure, branch protection or broad refactors."
     },
     "summary": {
       "type": "string",
-      "maxLength": 1200
+      "maxLength": 1000,
+      "description": "What was implemented, in plain prose. No chain-of-thought, no file contents."
     },
     "changed": {
       "type": "array",
       "maxItems": 50,
-      "items": {
-        "type": "string",
-        "maxLength": 300
-      }
+      "description": "One entry per changed target: 'path/to/File.java - what changed and why'.",
+      "items": { "type": "string", "maxLength": 300 }
     },
     "verified": {
       "type": "array",
       "maxItems": 50,
-      "items": {
-        "type": "string",
-        "maxLength": 300
-      }
+      "description": "One entry per verification command actually executed, in the form '<command> => exit <code>'. Never list a command you did not run.",
+      "items": { "type": "string", "maxLength": 300 }
     },
     "review": {
       "type": "string",
-      "enum": [
-        "clean",
-        "findings",
-        "not_done"
-      ]
+      "enum": ["clean", "findings", "not_done"],
+      "description": "Result of your own self-review pass over your own diff."
     },
     "findings": {
       "type": "array",
       "maxItems": 12,
-      "items": {
-        "type": "string",
-        "maxLength": 600
-      }
+      "description": "Real problems you found and could not fix, or deliberately left. Empty if none.",
+      "items": { "type": "string", "maxLength": 600 }
     },
     "next": {
       "type": "string",
-      "maxLength": 800
+      "maxLength": 800,
+      "description": "The single most useful next action for Claude, or 'none'."
     }
   }
 }

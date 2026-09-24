@@ -1,190 +1,233 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Run a bounded Gemini execution contract through Antigravity, enforce a
+# deterministic completion gate, and return a short activity digest plus one
+# compact JSON result. The full event stream never reaches Claude.
+set -uo pipefail
 
-MODE="${1:-ultra}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="$SCRIPT_DIR/lib"
+SCHEMA="$SCRIPT_DIR/../references/result-schema.json"
+
+MODE="ultra"
+READONLY=0
+ALLOW_TODO="${GEMINI_ALLOW_TODO:-0}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    lite|full|ultra) MODE="$1" ;;
+    --readonly)      READONLY=1 ;;
+    --allow-todo)    ALLOW_TODO=1 ;;
+    -h|--help)
+      echo "Usage: run-gemini.sh [lite|full|ultra] [--readonly] [--allow-todo] < contract" >&2
+      exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 case "$MODE" in
-  lite)  EFFORT="${AGY_LITE_EFFORT:-low}" ;;
-  full)  EFFORT="${AGY_FULL_EFFORT:-medium}" ;;
-  ultra) EFFORT="${AGY_ULTRA_EFFORT:-high}" ;;
-  *) echo "Usage: run-gemini.sh [lite|full|ultra]" >&2; exit 2 ;;
+  lite)
+    MODEL_DEFAULT="gemini-3.8-flash-low";    EFFORT="low";    ATTEMPTS_DEFAULT=1; LINES=20 ;;
+  full)
+    MODEL_DEFAULT="gemini-3.8-flash-medium"; EFFORT="medium"; ATTEMPTS_DEFAULT=2; LINES=30 ;;
+  ultra)
+    MODEL_DEFAULT="gemini-3.8-flash-high";   EFFORT="high";   ATTEMPTS_DEFAULT=3; LINES=40 ;;
 esac
 
-command -v agy >/dev/null 2>&1 || {
-  echo "ERROR: agy not found in PATH" >&2
-  exit 127
-}
+MODEL="${AGY_GEMINI_MODEL:-$MODEL_DEFAULT}"
+ESCALATE_MODEL="${GEMINI_ESCALATE_MODEL:-gemini-3.1-pro-high}"
+MAX_ATTEMPTS="${GEMINI_MAX_ATTEMPTS:-$ATTEMPTS_DEFAULT}"
+AGENT="${AGY_GEMINI_AGENT:-gemini-orchestrator}"
+LINES="${GEMINI_DIGEST_LINES:-$LINES}"
 
-command -v python3 >/dev/null 2>&1 || {
-  echo "ERROR: python3 not found in PATH" >&2
-  exit 127
-}
+for tool in agy python3; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not found in PATH" >&2; exit 127; }
+done
 
-command -v jq >/dev/null 2>&1 || {
-  echo "ERROR: jq not found in PATH" >&2
-  exit 127
-}
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/gemini-skill"
-RUN_ROOT="$STATE_ROOT/runs"
-mkdir -p "$RUN_ROOT"
-
-STAMP="$(date +%Y%m%d-%H%M%S)"
-RUN_ID="${STAMP}-$$-$RANDOM"
-RUN_DIR="$RUN_ROOT/$RUN_ID"
+RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+RUN_DIR="$STATE_ROOT/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"
 
-PROMPT="$(cat)"
+# ---------------------------------------------------------------- contract
+RAW="$RUN_DIR/contract.raw"
+cat > "$RAW"
 
-EVENTS="$RUN_DIR/events.ndjson"
-STDERR="$RUN_DIR/stderr.log"
-STATUS="$RUN_DIR/status.log"
-RESULT="$RUN_DIR/result.json"
+CONTRACT="$RUN_DIR/contract.txt"
+VERIFY="$RUN_DIR/verify.txt"
+awk -v c="$CONTRACT" -v v="$VERIFY" '
+  /^===VERIFY===[[:space:]]*$/ { inv=1; next }
+  { print > (inv ? v : c) }
+' "$RAW"
+touch "$CONTRACT" "$VERIFY"
 
-printf 'START mode=%s effort=%s agent=%s\n' \
-  "$MODE" \
-  "$EFFORT" \
-  "${AGY_GEMINI_AGENT:-gemini-orchestrator}" > "$STATUS"
-
-ARGS=(
-  --agent "${AGY_GEMINI_AGENT:-gemini-orchestrator}"
-  --effort "$EFFORT"
-  --output-format stream-json
-)
-
-if [[ -n "${AGY_GEMINI_MODEL:-}" ]]; then
-  ARGS+=(--model "$AGY_GEMINI_MODEL")
+if [[ ! -s "$CONTRACT" ]]; then
+  echo "ERROR: empty contract on stdin" >&2
+  exit 2
 fi
 
-if [[ "${AGY_UNSAFE:-0}" == "1" ]]; then
-  ARGS+=(--dangerously-skip-permissions)
-fi
+VERIFY_COUNT="$(grep -cve '^[[:space:]]*$' -e '^[[:space:]]*#' "$VERIFY" || true)"
 
-set +e
-agy "${ARGS[@]}" -p "$PROMPT" >"$EVENTS" 2>"$STDERR"
-EXIT_CODE=$?
-set -e
+# Ground the contract in the real workspace. Without this the agent has been
+# observed searching the whole filesystem for files sitting in its own cwd.
+GROUNDED="$RUN_DIR/grounded.txt"
+{
+  echo "=== WORKSPACE ==="
+  echo "Working directory: $PWD"
+  [[ "$REPO" != "$PWD" ]] && echo "Repository root:   $REPO"
+  echo "Every relative path in this contract resolves against the working directory."
+  echo "The files you need are already there. Do NOT search outside it, and never"
+  echo "run a filesystem-wide find. Start with ls and git status."
+  echo
+  echo "Files at the working directory root:"
+  ls -1A "$PWD" 2>/dev/null | head -40 | sed 's/^/  /'
+  if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo
+    echo "Branch: $(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
+    UNCOMMITTED="$(git -C "$REPO" status --short 2>/dev/null | head -20)"
+    if [[ -n "$UNCOMMITTED" ]]; then
+      echo "Uncommitted changes already present (do not revert these):"
+      printf '%s\n' "$UNCOMMITTED" | sed 's/^/  /'
+    else
+      echo "Working tree is clean."
+    fi
+  fi
+  echo
+  cat "$CONTRACT"
+} > "$GROUNDED"
+mv "$GROUNDED" "$CONTRACT"
 
-python3 - "$EVENTS" "$STATUS" "$RESULT" "$EXIT_CODE" <<'PY'
-import json
-import re
-import sys
-from pathlib import Path
+# Gemini must see the same bar the gate will hold it to.
+{
+  echo
+  echo "=== NON-NEGOTIABLE COMPLETION BAR ==="
+  echo "An automated gate runs after you stop. It checks the real workspace, not your report."
+  echo "You FAIL the gate, and will be sent back to work, if any of these is true:"
+  echo "  - no file actually changed"
+  echo "  - the new diff contains TODO, FIXME, placeholder, stub, 'not implemented',"
+  echo "    NotImplementedError, UnsupportedOperationException or an empty catch block"
+  echo "  - any verification command below exits non-zero"
+  echo "Do not weaken, skip, delete or rewrite tests to make a command pass."
+  echo "Do not report success before you have run every command and seen exit 0."
+  if [[ "$VERIFY_COUNT" -gt 0 ]]; then
+    echo "VERIFICATION COMMANDS (run each yourself, from the working directory):"
+    sed -e '/^[[:space:]]*$/d' -e 's/^/  $ /' "$VERIFY"
+  fi
+  echo "Return only the compact JSON result. No chain-of-thought, no file dumps, no secrets."
+} >> "$CONTRACT"
 
-events_path, status_path, result_path, exit_code = sys.argv[1:]
-status_path = Path(status_path)
-result_path = Path(result_path)
+python3 "$LIB/gate.py" snapshot --run-dir "$RUN_DIR" --repo "$REPO"
 
-def redact(s):
-    if not isinstance(s, str):
-        return s
-    patterns = [
-        (r'(?i)(PRIVATE-TOKEN\s*[:=]\s*)[^\s,"\']+', r'\1[REDACTED]'),
-        (r'(?i)(Authorization\s*:\s*Bearer\s+)[^\s,"\']+', r'\1[REDACTED]'),
-        (r'(?i)(password|passwd|secret|token|api[_-]?key|secret[_-]?id)\s*([=:])\s*([^\s,"\']+)', r'\1\2[REDACTED]'),
-        (r'(?i)(glpat-[A-Za-z0-9_-]+)', '[REDACTED_GITLAB_TOKEN]'),
-        (r'(?i)(-----BEGIN [^-]+ PRIVATE KEY-----).*?(-----END [^-]+ PRIVATE KEY-----)', r'\1[REDACTED]\2'),
-        (r'(?i)(AKIA[0-9A-Z]{16})', '[REDACTED_AWS_KEY]'),
-    ]
-    for p, repl in patterns:
-        s = re.sub(p, repl, s, flags=re.DOTALL)
-    return s
+# ---------------------------------------------------------------- run loop
+ATTEMPT=1
+GATE_RC=1
+PROMPT_FILE="$CONTRACT"
 
-def summarize_tool(ev):
-    s = ev.get("step_update", {})
-    name = s.get("tool_name") or (s.get("tool_info") or {}).get("name") or "tool"
-    info = s.get("tool_info") or {}
-    params = info.get("parameters")
-    if isinstance(params, dict):
-        params_s = json.dumps(params, ensure_ascii=False)
-    else:
-        params_s = str(params or "")
-    params_s = redact(params_s)
-    if len(params_s) > 400:
-        params_s = params_s[:400] + "..."
-    return f"TOOL {name}: {params_s}"
+while [[ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]]; do
+  EVENTS="$RUN_DIR/events-$ATTEMPT.ndjson"
+  STDERR_LOG="$RUN_DIR/stderr-$ATTEMPT.log"
+  RESULT="$RUN_DIR/result-$ATTEMPT.json"
+  META="$RUN_DIR/meta-$ATTEMPT.json"
 
-def process():
-    lines = []
-    final = None
+  USE_MODEL="$MODEL"
+  # Last shot on a multi-attempt run goes to the stronger reasoning model.
+  if [[ "$ATTEMPT" -gt 1 && "$ATTEMPT" -eq "$MAX_ATTEMPTS" && -z "${AGY_GEMINI_MODEL:-}" ]]; then
+    USE_MODEL="$ESCALATE_MODEL"
+  fi
+
+  ARGS=(--agent "$AGENT" --effort "$EFFORT" --model "$USE_MODEL"
+        --add-dir "$PWD" --output-format stream-json)
+  [[ "$REPO" != "$PWD" ]] && ARGS+=(--add-dir "$REPO")
+  [[ -f "$SCHEMA" ]] && ARGS+=(--json-schema "$SCHEMA")
+  [[ "${AGY_UNSAFE:-0}" == "1" ]] && ARGS+=(--dangerously-skip-permissions)
+
+  if [[ "$ATTEMPT" -gt 1 ]]; then
+    CONV="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("conversation_id",""))' \
+            "$RUN_DIR/meta-1.json" 2>/dev/null || true)"
+    if [[ -n "$CONV" ]]; then
+      ARGS+=(--conversation "$CONV")
+    else
+      ARGS+=(--continue)
+    fi
+  fi
+
+  echo "START attempt=$ATTEMPT model=$USE_MODEL effort=$EFFORT agent=$AGENT cwd=$PWD" \
+    >> "$RUN_DIR/status.log"
+
+  STARTED="$(date +%s)"
+  agy "${ARGS[@]}" -p "$(cat "$PROMPT_FILE")" >"$EVENTS" 2>"$STDERR_LOG"
+  AGY_RC=$?
+  WALL=$(( $(date +%s) - STARTED ))
+
+  python3 "$LIB/digest.py" "$EVENTS" \
+    --run-id "$RUN_ID" --mode "$MODE" --attempt "$ATTEMPT" \
+    --wall "$WALL" --max-lines "$LINES" \
+    --out-result "$RESULT" --out-meta "$META"
+
+  if [[ "$AGY_RC" -ne 0 ]]; then
+    echo "  gate      FAIL — agy exited $AGY_RC (see: gemini-status $RUN_ID)"
+    tail -n 3 "$STDERR_LOG" 2>/dev/null | sed 's/^/  stderr    /'
+  fi
+
+  GATE_ARGS=(check --run-dir "$RUN_DIR" --repo "$REPO" --cwd "$PWD"
+             --result "$RESULT" --verify-file "$VERIFY")
+  [[ "$READONLY" == "1" ]] && GATE_ARGS+=(--readonly)
+  [[ "$ALLOW_TODO" == "1" ]] && GATE_ARGS+=(--allow-todo)
+  python3 "$LIB/gate.py" "${GATE_ARGS[@]}"
+  GATE_RC=$?
+
+  cp -f "$RESULT" "$RUN_DIR/result.json" 2>/dev/null || true
+
+  if [[ "$GATE_RC" -eq 0 ]]; then
+    break
+  fi
+
+  # needs_claude is an escalation, not a failure to grind on.
+  if python3 -c 'import json,sys;sys.exit(0 if json.load(open(sys.argv[1])).get("escalate") else 1)' \
+      "$RUN_DIR/verdict.json" 2>/dev/null; then
+    echo "  gate      escalating to Claude (Gemini returned needs_claude)"
+    break
+  fi
+
+  if [[ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]]; then
+    break
+  fi
+
+  PROMPT_FILE="$RUN_DIR/feedback.txt"
+  LINES=20
+  ATTEMPT=$(( ATTEMPT + 1 ))
+  echo "  retry     attempt $ATTEMPT — sending gate failures back to Gemini"
+done
+
+# ---------------------------------------------------------------- handoff
+echo "── result ──"
+python3 - "$RUN_DIR/result.json" "$RUN_DIR/verdict.json" "$RUN_ID" "$GATE_RC" <<'HANDOFF'
+import json, sys
+
+result_path, verdict_path, run_id, gate_rc = sys.argv[1:]
+
+def load(path):
     try:
-        for raw in Path(events_path).read_text(errors="replace").splitlines():
-            try:
-                ev = json.loads(raw)
-            except Exception:
-                continue
+        return json.load(open(path))
+    except Exception:
+        return {}
 
-            if ev.get("event") == "init":
-                i = ev.get("init") or {}
-                lines.append(
-                    "INIT "
-                    + f"model={i.get('model','-')} "
-                    + f"agent={i.get('agent','-')} "
-                    + f"cwd={i.get('cwd','-')}"
-                )
-            elif ev.get("event") == "step_update":
-                s = ev.get("step_update") or {}
-                if s.get("step_type") == "tool":
-                    lines.append(summarize_tool(ev))
-                sub = s.get("subagent_info")
-                if sub:
-                    for a in sub.get("subagents", []) or []:
-                        lines.append(
-                            "SUBAGENT "
-                            + f"type={a.get('type_name','-')} "
-                            + f"role={a.get('role','-')} "
-                            + f"id={a.get('conversation_id','-')}"
-                        )
-                if s.get("step_type") == "agent_response" and s.get("text_delta"):
-                    t = redact(s["text_delta"]).strip().replace("\n"," ")
-                    if t:
-                        lines.append("AGENT " + (t[:500] + "..." if len(t) > 500 else t))
-                usage = s.get("usage")
-                if usage:
-                    lines.append(
-                        "USAGE "
-                        + f"in={usage.get('input_tokens',0)} "
-                        + f"out={usage.get('output_tokens',0)} "
-                        + f"think={usage.get('thinking_tokens',0)} "
-                        + f"total={usage.get('total_tokens',0)}"
-                    )
-            elif ev.get("event") == "result":
-                final = ev.get("result") or {}
-                usage = final.get("usage") or {}
-                lines.append(
-                    "RESULT "
-                    + f"status={final.get('status','-')} "
-                    + f"turns={final.get('num_turns',0)} "
-                    + f"duration={final.get('duration_seconds',0)}s "
-                    + f"total_tokens={usage.get('total_tokens',0)} "
-                    + f"thinking_tokens={usage.get('thinking_tokens',0)}"
-                )
-    except FileNotFoundError:
-        pass
+result, verdict = load(result_path), load(verdict_path)
 
-    status_path.write_text("\n".join(lines[-200:]) + ("\n" if lines else ""), encoding="utf-8")
+# The gate, not Gemini, decides whether the work is done.
+if gate_rc != "0" and not verdict.get("escalate"):
+    result["status"] = "failed"
 
-    if final is None:
-        final = {
-            "status": "failed" if exit_code != "0" else "needs_claude",
-            "risk": "medium",
-            "summary": "No terminal AGY result was captured.",
-            "changed": [],
-            "verified": [],
-            "review": "not_done",
-            "findings": [],
-            "next": "Inspect the run logs."
-        }
-    result_path.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
+result["gate"] = {
+    "pass": verdict.get("pass", False),
+    "reasons": verdict.get("reasons", []),
+    "verify": verdict.get("verify", []),
+}
+result["run_id"] = run_id
+print(json.dumps(result, ensure_ascii=False))
+HANDOFF
 
-process()
-PY
-
-if [[ "$EXIT_CODE" -ne 0 ]]; then
-  echo "Gemini run failed. Run: $RUN_ID" >&2
-  echo "Log: $RUN_DIR" >&2
-  exit "$EXIT_CODE"
-fi
-
-# Claude receives ONLY the compact terminal result.
-jq -c '.' "$RESULT"
+echo "── full stream: gemini-watch $RUN_ID  ·  logs: $RUN_DIR ──"
+exit 0

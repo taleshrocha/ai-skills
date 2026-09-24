@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home()/".local/state")) / "gemini-skill/runs"
+
+def latest():
+    if not ROOT.exists(): return None
+    ds=[p for p in ROOT.iterdir() if p.is_dir()]
+    return max(ds,key=lambda p:p.stat().st_mtime) if ds else None
+
+arg=sys.argv[1] if len(sys.argv)>1 else "latest"
+run=latest() if arg=="latest" else ROOT/arg
+if not run or not run.exists():
+    print("No Gemini run found.")
+    sys.exit(1)
+
+print(f"RUN   {run.name}")
+print(f"PATH  {run}")
+status=run/"status.log"
+result=run/"result.json"
+if status.exists():
+    print("\nSTATUS")
+    print(status.read_text(errors="replace")[-6000:])
+if result.exists():
+    print("RESULT")
+    print(result.read_text(errors="replace"))

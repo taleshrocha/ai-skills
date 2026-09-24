@@ -1,0 +1,21 @@
+{
+  "version": "12",
+  "modifies_caveman": false,
+  "claude_skill": "/mnt/data/gemini-skill-v12/claude-skill/SKILL.md",
+  "gemini_agents": [
+    "gemini-devops-worker.md",
+    "gemini-docs-worker.md",
+    "gemini-gitlab-worker.md",
+    "gemini-java-worker.md",
+    "gemini-orchestrator.md",
+    "gemini-research-worker.md",
+    "gemini-review-worker.md",
+    "gemini-test-worker.md",
+    "gemini-web-worker.md"
+  ],
+  "monitor_commands": [
+    "gemini-watch",
+    "gemini-status",
+    "gemini-runs"
+  ]
+}

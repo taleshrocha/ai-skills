@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+import json, os, re, sys, time
+from pathlib import Path
+
+ROOT = Path(os.environ.get("XDG_STATE_HOME", Path.home()/".local/state")) / "gemini-skill/runs"
+
+def redact(s):
+    if not isinstance(s, str): return s
+    pats = [
+        (r'(?i)(PRIVATE-TOKEN\s*[:=]\s*)[^\s,"\']+', r'\1[REDACTED]'),
+        (r'(?i)(Authorization\s*:\s*Bearer\s+)[^\s,"\']+', r'\1[REDACTED]'),
+        (r'(?i)(password|passwd|secret|token|api[_-]?key|secret[_-]?id)\s*([=:])\s*([^\s,"\']+)', r'\1\2[REDACTED]'),
+        (r'(?i)glpat-[A-Za-z0-9_-]+', '[REDACTED_GITLAB_TOKEN]'),
+        (r'-----BEGIN [^-]+ PRIVATE KEY-----.*?-----END [^-]+ PRIVATE KEY-----', '[REDACTED_PRIVATE_KEY]'),
+    ]
+    for p, r in pats:
+        s = re.sub(p, r, s, flags=re.DOTALL)
+    return s
+
+def latest_run():
+    if not ROOT.exists(): return None
+    dirs = [p for p in ROOT.iterdir() if p.is_dir()]
+    return max(dirs, key=lambda p: p.stat().st_mtime) if dirs else None
+
+def choose():
+    arg = sys.argv[1] if len(sys.argv) > 1 else "latest"
+    if arg == "latest":
+        return latest_run()
+    p = ROOT / arg
+    return p if p.is_dir() else None
+
+run = choose()
+if not run:
+    print("No Gemini runs found.")
+    sys.exit(1)
+
+events = run/"events.ndjson"
+status = run/"status.log"
+stderr = run/"stderr.log"
+print(f"📡 Gemini run: {run.name}")
+print(f"   logs: {run}")
+print("   Ctrl+C to stop watching.\n")
+
+pos = 0
+seen_results = set()
+
+while True:
+    if status.exists():
+        # Status is generated after completion; stream events below for live view.
+        pass
+
+    if events.exists():
+        with events.open(errors="replace") as f:
+            f.seek(pos)
+            for raw in f:
+                pos = f.tell()
+                try:
+                    ev = json.loads(raw)
+                except Exception:
+                    continue
+
+                typ = ev.get("event")
+                if typ == "init":
+                    i = ev.get("init") or {}
+                    print(f"🚀 START  agent={i.get('agent','-')} model={i.get('model','-')} cwd={i.get('cwd','-')}", flush=True)
+
+                elif typ == "step_update":
+                    s = ev.get("step_update") or {}
+                    if s.get("step_type") == "tool":
+                        info = s.get("tool_info") or {}
+                        name = s.get("tool_name") or info.get("name") or "tool"
+                        params = info.get("parameters") or {}
+                        txt = redact(json.dumps(params, ensure_ascii=False))
+                        if len(txt) > 500: txt = txt[:500] + "..."
+                        print(f"🔧 {name}  {txt}", flush=True)
+                        if info.get("error"):
+                            print(f"   ❌ {redact(json.dumps(info['error'], ensure_ascii=False))[:500]}", flush=True)
+
+                    sub = s.get("subagent_info")
+                    if sub:
+                        for a in sub.get("subagents", []) or []:
+                            print(
+                                f"🤖 SUBAGENT  {a.get('type_name','-')} "
+                                f"role={a.get('role','-')} "
+                                f"id={a.get('conversation_id','-')}",
+                                flush=True
+                            )
+
+                    if s.get("step_type") == "agent_response":
+                        t = redact(s.get("text_delta","")).strip().replace("\n"," ")
+                        if t:
+                            print(f"💬 {t[:700]}", flush=True)
+
+                    usage = s.get("usage")
+                    if usage:
+                        print(
+                            f"📊 tokens={usage.get('total_tokens',0)} "
+                            f"(in={usage.get('input_tokens',0)} "
+                            f"out={usage.get('output_tokens',0)} "
+                            f"thinking={usage.get('thinking_tokens',0)})",
+                            flush=True
+                        )
+
+                elif typ == "result":
+                    r = ev.get("result") or {}
+                    u = r.get("usage") or {}
+                    key = json.dumps(r, sort_keys=True)
+                    if key not in seen_results:
+                        seen_results.add(key)
+                        print(
+                            f"\n✅ FINISHED status={r.get('status','-')} "
+                            f"turns={r.get('num_turns',0)} "
+                            f"duration={r.get('duration_seconds',0)}s "
+                            f"total_tokens={u.get('total_tokens',0)} "
+                            f"thinking={u.get('thinking_tokens',0)}",
+                            flush=True
+                        )
+                        print(f"Result: {run/'result.json'}", flush=True)
+                        sys.exit(0)
+
+    if stderr.exists() and stderr.stat().st_size:
+        # Only show the last small diagnostic tail when the process is done,
+        # avoiding noise and accidentally surfacing secrets.
+        pass
+
+    time.sleep(0.5)

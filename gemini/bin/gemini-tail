@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Emit a Gemini run's milestones one line at a time, then exit when it ends.
+
+Built for Claude Code's Monitor tool: one stdout line becomes one chat
+notification, so the user watches the run progress instead of staring at a
+spinner. The feed is deliberately sparse — files written, subagents, failures,
+gate verdicts, retries, and a heartbeat — because a per-step feed would be
+throttled as a firehose.
+
+  gemini-tail              follow the most recent run
+  gemini-tail <run-id>     follow a specific run
+  gemini-tail --wait 120   wait up to 120s for a run to appear first
+"""
+
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "gemini-skill"
+RUNS = STATE / "runs"
+
+
+def resolve(run_id, wait_seconds):
+    """Find the run directory, tolerating being started before the run is."""
+    deadline = time.time() + wait_seconds
+    while True:
+        if run_id:
+            candidate = RUNS / run_id
+        else:
+            current = STATE / "current"
+            candidate = RUNS / current.read_text().strip() if current.exists() else None
+        if candidate and candidate.is_dir():
+            return candidate
+        if time.time() >= deadline:
+            return None
+        time.sleep(1)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("run_id", nargs="?", default="")
+    parser.add_argument("--wait", type=float, default=90,
+                        help="seconds to wait for the run to appear")
+    parser.add_argument("--poll", type=float, default=3)
+    args = parser.parse_args()
+
+    run = resolve(args.run_id, args.wait)
+    if not run:
+        print("gemini-tail: no run found")
+        return 1
+
+    milestones = run / "milestones.log"
+    done = run / "DONE"
+    sent = 0
+
+    while True:
+        finished = done.exists()
+        if milestones.exists():
+            lines = milestones.read_text(errors="replace").splitlines()
+            for line in lines[sent:]:
+                if line.strip():
+                    print(line, flush=True)
+            sent = len(lines)
+        # Read once more after DONE appears so the final lines are never lost.
+        if finished:
+            return 0
+        time.sleep(args.poll)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

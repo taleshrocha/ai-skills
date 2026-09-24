@@ -97,34 +97,92 @@ The gate only has teeth when it has commands to run. Always supply them.
 - No commands available? Say so in the digest — the gate then only checks the
   diff, and Claude's review must be correspondingly deeper.
 
-Flags: `--readonly` (recon; skips the "nothing changed" check),
-`--allow-todo` (only when a TODO is genuinely the deliverable).
+**The gate is exactly as strong as the checker, and writing the checker is
+Claude's job — not Gemini's.** When a project has no suitable test command,
+write one: a short script that asserts the structural and security properties
+the change must hold, kept outside the repository so Gemini cannot edit it, and
+invoked by absolute path.
 
-## What comes back, and what you show the user
+Encode the invariants that would actually hurt, not only the shape of the
+output. A checker that verifies a config parses and has the right keys will
+happily pass a pipeline that copies production credentials into a Docker build
+context. Ask what the worst plausible correct-looking result is, then assert
+against it: secrets never entering a build context, an image, or a log;
+cleanup steps that a later override cannot silently cancel; values that must
+come from configuration rather than being hardcoded; fail-fast on the settings
+whose absence degrades silently.
 
-The script prints, in order:
+Flags: `--readonly` (recon; the briefing file is the deliverable and the gate
+requires it), `--ref DIR` (a reference repository Gemini may read but not
+modify; repeatable), `--allow-todo` (only when a TODO is genuinely the
+deliverable).
 
-1. one **activity digest** per attempt — a bounded, redacted line-per-action
-   trace of what Gemini actually did
-2. the **gate report** — diffstat, per-command pass/fail, stub hits, verdict
-3. one compact **JSON result** with a `gate` field
+### Working across repositories
 
-**Relay the digest and the gate report to the user verbatim, in a fenced code
-block, before your own commentary.** That trace is the user's only window into
-Gemini's work; summarizing it away defeats the purpose. It is already capped
-(~40 lines per attempt), so it is cheap to pass through.
-
-Then add your own short verdict: what changed, what you checked, what you did
-not check, and any risk you are carrying.
-
-For the live stream, from their own terminal:
+`--ref` grounds a second repository read-only, for "build X the way Y does it":
 
 ```bash
-gemini-watch
+run-gemini.sh ultra --ref ../reference-service <<'EOF'
+...
+EOF
 ```
 
-`gemini-status` for a one-shot summary, `gemini-runs` to list recent runs. Those
-read the full event log on disk, which never enters Claude's context.
+Both directories are listed in the contract's workspace block and passed to
+AGY with `--add-dir`. The gate still only inspects the working repository, so
+a reference repo cannot be modified without the gate noticing nothing — state
+the read-only constraint in the contract too.
+
+## Run it live — never let the user watch a spinner
+
+A real run takes minutes. Run it in the foreground and the user sees nothing at
+all until it ends, which is the single worst property this Skill can have.
+Always use both halves of this pattern:
+
+**1. Launch in the background** with a run id you choose, so the log path is
+known before the run exists:
+
+```bash
+GEMINI_RUN_ID=ci-$(date +%H%M%S) ~/.claude/skills/gemini/scripts/run-gemini.sh ultra <<'EOF'
+...
+EOF
+```
+
+Call it with Bash `run_in_background: true`. You are re-invoked when it exits.
+
+**2. Arm a Monitor on the same run id**, in the same response:
+
+```bash
+gemini-tail ci-143207
+```
+
+`gemini-tail` emits one line per milestone and exits when the run finishes, so
+each milestone becomes its own chat notification while the work happens. The
+feed is deliberately sparse — start, files written, subagents, tool failures,
+gate verdict, retries, and a heartbeat every 15 steps — because a per-step feed
+would be throttled as a firehose.
+
+What the user sees arriving live:
+
+```text
+[0:00] start   attempt 1 · model=gemini-3.8-flash-high
+[0:22] write     src/orders/OrderService.java
+[1:04] subagent  gemini-test-worker
+[1:38] …       30 steps, working (last: cmd ./mvnw -q -pl orders test)
+  gate      PASS
+[done]   run ci-143207 finished
+```
+
+When the run ends you receive the full per-step timeline plus the gate report
+and the JSON result. **Relay the timeline and gate report to the user verbatim
+in a fenced code block** before your own commentary — it is already capped and
+redacted, and it is the user's record of what Gemini actually did.
+
+Then add your own short verdict: what changed, what you checked, what you did
+not check, what risk you are carrying.
+
+For a terminal-side view the user can also run `gemini-watch` (full event
+stream, follows retries), `gemini-status` (one-shot summary) or `gemini-runs`
+(recent runs and verdicts). Those read the log on disk and cost no context.
 
 ## Claude's review, scaled to risk
 
@@ -216,13 +274,15 @@ actually DevOps.
 
 ## Stacking
 
+This Skill can be explicitly stacked with another Skill:
+
 ```text
 /caveman /gemini ultra
 <task>
 ```
 
-This Skill does not replace or modify the other Skill. The trailing task is
-shared.
+When stacked, this Skill does not replace or modify the other Skill. The
+trailing task is shared.
 
 ## Final principle
 

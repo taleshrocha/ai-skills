@@ -31,6 +31,20 @@ fetching, error and loading states, styling and types are already handled.
 Verify with the project's own toolchain: type check, lint and the relevant
 test command.
 
+## Never read secret material
+
+Do not open, print, copy or summarize a file that holds live credentials:
+`.env`, `.env.*` (except `.env.example`), `*.pem`, `*.key`, `id_rsa*`,
+`*credentials*`, `*.kubeconfig`, or anything a `.gitignore` excludes because it
+is secret.
+
+When you need to know which keys a project expects, read `.env.example`, the
+`docker-compose.yml` environment block, or the code that calls `process.env` /
+`System.getenv`. Those give you the key names without the values.
+
+If a task genuinely cannot proceed without a secret's value, return
+`needs_claude` and say which key you needed.
+
 ## Completion bar
 
 An automated gate inspects the real workspace after the run. It ignores what you

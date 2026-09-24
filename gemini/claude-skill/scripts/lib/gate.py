@@ -242,6 +242,15 @@ def cmd_check(args):
         stubs = []
         report.append("  changed   (not a git repository — diff gate skipped)")
 
+    # A reconnaissance run changes no files, so its briefing is the deliverable.
+    if args.require_file:
+        required = Path(args.require_file)
+        if not required.exists() or not required.stat().st_size:
+            reasons.append(f"Required output file was not written: {required.name}")
+        else:
+            report.append(f"  briefing  {required.name} "
+                          f"({len(required.read_text(errors='replace').splitlines())} lines)")
+
     commands = []
     if args.verify_file and Path(args.verify_file).exists():
         commands = [l.strip() for l in Path(args.verify_file).read_text().splitlines()
@@ -299,6 +308,7 @@ def main():
     check.add_argument("--result", required=True)
     check.add_argument("--verify-file", default="")
     check.add_argument("--cwd", default="", help="directory to run verification commands in")
+    check.add_argument("--require-file", default="", help="path the run must have written")
     check.add_argument("--readonly", action="store_true")
     check.add_argument("--allow-todo", action="store_true")
 

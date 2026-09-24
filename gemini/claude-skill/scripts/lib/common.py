@@ -37,3 +37,32 @@ def short_path(path, keep=3):
     if len(parts) <= keep:
         return "/".join(parts)
     return ".../" + "/".join(parts[-keep:])
+
+
+class LineTailer:
+    """Yield complete lines from a growing file, remembering where we stopped.
+
+    Iterating a file object with `for line in handle` enables a read-ahead
+    buffer and makes `handle.tell()` raise, so follow-the-file loops must use
+    readline(). A trailing line without its newline is a half-flushed write:
+    leave it, and pick it up on the next pass.
+    """
+
+    def __init__(self, path):
+        from pathlib import Path as _Path
+        self.path = _Path(path)
+        self.pos = 0
+
+    def lines(self):
+        if not self.path.exists():
+            return
+        with self.path.open(errors="replace") as handle:
+            handle.seek(self.pos)
+            while True:
+                line = handle.readline()
+                if not line.endswith("\n"):
+                    break
+                self.pos = handle.tell()
+                stripped = line.strip()
+                if stripped:
+                    yield stripped

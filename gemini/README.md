@@ -80,31 +80,55 @@ that would genuinely fail if the work were wrong. A command that cannot fail
 
 ## Transparency
 
-Every run prints, straight into the Claude conversation:
+A run takes minutes, so it streams while it works rather than printing only at
+the end. Launch it in the background with a chosen run id and tail the
+milestones:
 
-1. an **activity digest** per attempt — one redacted line per action Gemini took
-2. the **gate report** — diffstat, per-command pass/fail, stub hits, verdict
-3. one compact **JSON result**
+```bash
+GEMINI_RUN_ID=my-run ./run-gemini.sh ultra <<'EOF' &
+...
+EOF
+gemini-tail my-run
+```
+
+`gemini-tail` prints one line per milestone and exits when the run ends. Under
+Claude Code it is driven by the Monitor tool, so each line lands in the chat as
+it happens:
 
 ```text
-── gemini run 20260924-191332 · attempt 1 · ultra · model=gemini-3.8-flash-high ──
-  cmd       ls -la && git status
-  read      .../slugify.py, .../test_slugify.py  (x2)
-  write     .../slugify.py
-  cmd       python3 -m unittest -q
-  cmd       git status --short && git diff && git diff --check
-── gemini stopped: turns=4 wall=149s gemini_tokens=186486 ──
-  changed   1 file changed, 25 insertions(+), 2 deletions(-)
-  verify    [ok  ] python3 -m unittest -q
+[0:00] start   attempt 1 · model=gemini-3.8-flash-high
+[0:22] write     src/orders/OrderService.java
+[1:04] subagent  gemini-test-worker
+[1:38] …       30 steps, working (last: cmd ./mvnw -q -pl orders test)
+  gate      PASS
+[done]   run my-run finished
+```
+
+The feed is deliberately sparse — start, writes, subagents, failures, gate
+verdict, retries, heartbeat every 15 steps — so it never becomes a firehose.
+
+When the run finishes, the caller receives the full per-step timeline, the gate
+report, and one compact JSON result:
+
+```text
+[0:00] start   attempt 1 · model=gemini-3.8-flash-high
+[0:00] cmd       ls -la && git status
+[0:02] read      src/orders/OrderService.java
+[0:22] write     src/orders/OrderService.java
+[1:12] cmd       ./mvnw -q -pl orders test
+── gemini stopped: turns=4 wall=96s gemini_tokens=158180 ──
+  changed   1 file changed, 27 insertions(+), 2 deletions(-)
+  verify    [ok  ] ./mvnw -q -pl orders test
   gate      PASS
 ```
 
-The digest is capped (~40 lines per attempt) and credential-redacted, so full
-visibility stays cheap. The untruncated event stream never enters Claude's
-context — it is on disk:
+Everything is credential-redacted and line-capped, so full visibility stays
+cheap. The untruncated event stream never enters Claude's context — it is on
+disk:
 
 ```bash
-gemini-watch            # live, follows every retry attempt
+gemini-tail             # sparse milestones, exits when the run ends
+gemini-watch            # full live stream, follows every retry attempt
 gemini-status           # one-shot summary of the last run
 gemini-runs             # recent runs with their gate verdicts
 ```
@@ -173,9 +197,10 @@ claude-skill/
   references/devops.md         DevOps playbook, read on demand
   references/result-schema.json enforced via agy --json-schema
   scripts/run-gemini.sh        contract → attempts → gate → digest
+  scripts/lib/stream.py        live per-step + milestone streaming
   scripts/lib/digest.py        event stream → digest + compact result
   scripts/lib/gate.py          completion gate + retry-prompt author
   scripts/lib/common.py        redaction and clipping
 gemini-agents/<name>/agent.md  orchestrator + 8 workers
-bin/                           gemini-watch, gemini-status, gemini-runs
+bin/                           gemini-tail, gemini-watch, gemini-status, gemini-runs
 ```

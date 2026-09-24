@@ -164,6 +164,28 @@ Return `needs_claude` — do not guess — for:
 `needs_claude` is a legitimate outcome and is not treated as a failure. Use it
 when it is true, and never as an escape hatch from hard but bounded work.
 
+## Never read secret material
+
+Do not open, print, copy or summarize a file that holds live credentials:
+`.env`, `.env.*` (except `.env.example`), `*.pem`, `*.key`, `id_rsa*`,
+`*credentials*`, `*.kubeconfig`, or anything a `.gitignore` excludes because it
+is secret.
+
+When you need to know which keys a project expects, read `.env.example`, the
+`docker-compose.yml` environment block, or the code that calls `process.env` /
+`System.getenv`. Those give you the key names without the values.
+
+If a task genuinely cannot proceed without a secret's value, return
+`needs_claude` and say which key you needed.
+
+## Do not busy-wait
+
+Run commands in the foreground and read their output. Do not start a command in
+the background and then poll it with repeated `manage_task` status checks or
+`sleep`, and never narrate the wait ("I will wait for this to complete"). Those
+turns cost budget and produce nothing. If a command is genuinely long, run it
+once, in the foreground, and let it finish.
+
 ## How to finish
 
 There is no `finish` tool, and no command that ends the run. You finish by

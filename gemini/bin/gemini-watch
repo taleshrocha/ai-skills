@@ -101,7 +101,11 @@ def render(event):
 
 
 def follow(path, stop_after_idle):
-    """Tail one attempt's event file until its result arrives or it goes quiet."""
+    """Tail one attempt's event file until its result arrives or it goes quiet.
+
+    Uses readline() rather than iteration: iterating a file object turns on a
+    read-ahead buffer that makes tell() raise, which silently kills the tail.
+    """
     pos = 0
     idle = 0.0
     while True:
@@ -109,7 +113,8 @@ def follow(path, stop_after_idle):
         if path.exists():
             with path.open(errors="replace") as handle:
                 handle.seek(pos)
-                for line in handle:
+                while True:
+                    line = handle.readline()
                     if not line.endswith("\n"):
                         break
                     pos = handle.tell()

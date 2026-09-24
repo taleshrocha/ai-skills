@@ -1,12 +1,13 @@
 {
-  "version": "13",
+  "version": "14",
   "modifies_caveman": false,
   "claude_skill": "claude-skill/SKILL.md",
   "claude_skill_scripts": [
     "claude-skill/scripts/run-gemini.sh",
     "claude-skill/scripts/lib/common.py",
     "claude-skill/scripts/lib/digest.py",
-    "claude-skill/scripts/lib/gate.py"
+    "claude-skill/scripts/lib/gate.py",
+    "claude-skill/scripts/lib/stream.py"
   ],
   "claude_skill_references": [
     "claude-skill/references/devops.md",
@@ -24,7 +25,12 @@
     "gemini-test-worker",
     "gemini-web-worker"
   ],
-  "monitor_commands": ["gemini-watch", "gemini-status", "gemini-runs"],
+  "monitor_commands": [
+    "gemini-watch",
+    "gemini-tail",
+    "gemini-status",
+    "gemini-runs"
+  ],
   "models": {
     "lite": "gemini-3.8-flash-low",
     "full": "gemini-3.8-flash-medium",

@@ -11,14 +11,21 @@ SCHEMA="$SCRIPT_DIR/../references/result-schema.json"
 MODE="ultra"
 READONLY=0
 ALLOW_TODO="${GEMINI_ALLOW_TODO:-0}"
+REF_DIRS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     lite|full|ultra) MODE="$1" ;;
     --readonly)      READONLY=1 ;;
     --allow-todo)    ALLOW_TODO=1 ;;
+    --ref)
+      # A reference repository Gemini may read but must not modify.
+      [[ -d "${2:-}" ]] || { echo "ERROR: --ref needs a directory: ${2:-}" >&2; exit 2; }
+      REF_DIRS+=("$(cd "$2" && pwd)")
+      shift ;;
     -h|--help)
-      echo "Usage: run-gemini.sh [lite|full|ultra] [--readonly] [--allow-todo] < contract" >&2
+      echo "Usage: run-gemini.sh [lite|full|ultra] [--readonly] [--allow-todo]" >&2
+      echo "                     [--ref DIR]... < contract" >&2
       exit 0 ;;
     *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -47,11 +54,25 @@ done
 REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/gemini-skill"
-RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+RUN_ID="${GEMINI_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
 RUN_DIR="$STATE_ROOT/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"
 
+MILESTONES="$RUN_DIR/milestones.log"
+: > "$MILESTONES"
+echo "$RUN_ID" > "$STATE_ROOT/current"
+# gemini-tail watches for this to know the run is over.
+rm -f "$RUN_DIR/DONE"
+finish() { echo "$1" >> "$MILESTONES"; : > "$RUN_DIR/DONE"; }
+trap 'finish "[--:--] aborted"' INT TERM
+
 # ---------------------------------------------------------------- contract
+if [[ -t 0 ]]; then
+  echo "ERROR: the contract is read from stdin; pipe it in or use a heredoc" >&2
+  echo "       run-gemini.sh ultra <<'EOF' ... EOF" >&2
+  exit 2
+fi
+
 RAW="$RUN_DIR/contract.raw"
 cat > "$RAW"
 
@@ -94,6 +115,15 @@ GROUNDED="$RUN_DIR/grounded.txt"
       echo "Working tree is clean."
     fi
   fi
+  if [[ "${#REF_DIRS[@]}" -gt 0 ]]; then
+    echo
+    echo "READ-ONLY REFERENCE DIRECTORIES"
+    echo "Read these for patterns and conventions. Never write to them."
+    for ref in "${REF_DIRS[@]}"; do
+      echo "  $ref"
+      ls -1A "$ref" 2>/dev/null | head -25 | sed 's/^/      /'
+    done
+  fi
   echo
   cat "$CONTRACT"
 } > "$GROUNDED"
@@ -118,6 +148,21 @@ mv "$GROUNDED" "$CONTRACT"
   echo "Return only the compact JSON result. No chain-of-thought, no file dumps, no secrets."
 } >> "$CONTRACT"
 
+BRIEFING="$RUN_DIR/briefing.md"
+if [[ "$READONLY" == "1" ]]; then
+  # Recon produces no diff, so the briefing file is the whole deliverable.
+  # Without a fixed path Gemini buries it in its own artifact directory.
+  {
+    echo
+    echo "=== BRIEFING OUTPUT ==="
+    echo "Write your complete briefing, in Markdown, to exactly this path:"
+    echo "  $BRIEFING"
+    echo "That file IS the deliverable. The JSON result is only a pointer to it."
+    echo "Do not write it anywhere else. Do not inline it into the JSON."
+    echo "An empty or missing file fails the gate."
+  } >> "$CONTRACT"
+fi
+
 python3 "$LIB/gate.py" snapshot --run-dir "$RUN_DIR" --repo "$REPO"
 
 # ---------------------------------------------------------------- run loop
@@ -140,6 +185,9 @@ while [[ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]]; do
   ARGS=(--agent "$AGENT" --effort "$EFFORT" --model "$USE_MODEL"
         --add-dir "$PWD" --output-format stream-json)
   [[ "$REPO" != "$PWD" ]] && ARGS+=(--add-dir "$REPO")
+  for ref in ${REF_DIRS[@]+"${REF_DIRS[@]}"}; do
+    ARGS+=(--add-dir "$ref")
+  done
   [[ -f "$SCHEMA" ]] && ARGS+=(--json-schema "$SCHEMA")
   [[ "${AGY_UNSAFE:-0}" == "1" ]] && ARGS+=(--dangerously-skip-permissions)
 
@@ -157,13 +205,22 @@ while [[ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]]; do
     >> "$RUN_DIR/status.log"
 
   STARTED="$(date +%s)"
-  agy "${ARGS[@]}" -p "$(cat "$PROMPT_FILE")" >"$EVENTS" 2>"$STDERR_LOG"
+  agy "${ARGS[@]}" -p "$(cat "$PROMPT_FILE")" >"$EVENTS" 2>"$STDERR_LOG" &
+  AGY_PID=$!
+
+  # Print each step as it happens. Without this the caller sees nothing at all
+  # until the attempt ends, which on a long run is several silent minutes.
+  python3 "$LIB/stream.py" "$EVENTS" --pid "$AGY_PID" \
+    --milestones "$MILESTONES" --attempt "$ATTEMPT" ${GEMINI_QUIET:+--quiet}
+
+  wait "$AGY_PID"
   AGY_RC=$?
   WALL=$(( $(date +%s) - STARTED ))
 
+  # The stream already showed every step, so only the tallies are new here.
   python3 "$LIB/digest.py" "$EVENTS" \
     --run-id "$RUN_ID" --mode "$MODE" --attempt "$ATTEMPT" \
-    --wall "$WALL" --max-lines "$LINES" \
+    --wall "$WALL" --max-lines "$LINES" --summary-only \
     --out-result "$RESULT" --out-meta "$META"
 
   if [[ "$AGY_RC" -ne 0 ]]; then
@@ -173,10 +230,12 @@ while [[ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]]; do
 
   GATE_ARGS=(check --run-dir "$RUN_DIR" --repo "$REPO" --cwd "$PWD"
              --result "$RESULT" --verify-file "$VERIFY")
-  [[ "$READONLY" == "1" ]] && GATE_ARGS+=(--readonly)
+  [[ "$READONLY" == "1" ]] && GATE_ARGS+=(--readonly --require-file "$BRIEFING")
   [[ "$ALLOW_TODO" == "1" ]] && GATE_ARGS+=(--allow-todo)
-  python3 "$LIB/gate.py" "${GATE_ARGS[@]}"
-  GATE_RC=$?
+  python3 "$LIB/gate.py" "${GATE_ARGS[@]}" | tee -a "$RUN_DIR/gate.log"
+  GATE_RC=${PIPESTATUS[0]}
+  grep -E '^  (gate|verify|changed|briefing) ' "$RUN_DIR/gate.log" | tail -n 8 >> "$MILESTONES"
+  : > "$RUN_DIR/gate.log"
 
   cp -f "$RESULT" "$RUN_DIR/result.json" 2>/dev/null || true
 
@@ -198,10 +257,20 @@ while [[ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]]; do
   PROMPT_FILE="$RUN_DIR/feedback.txt"
   LINES=20
   ATTEMPT=$(( ATTEMPT + 1 ))
-  echo "  retry     attempt $ATTEMPT — sending gate failures back to Gemini"
+  echo "  retry     attempt $ATTEMPT — sending gate failures back to Gemini" \
+    | tee -a "$MILESTONES"
 done
 
 # ---------------------------------------------------------------- handoff
+if [[ "$READONLY" == "1" && -s "$BRIEFING" ]]; then
+  echo "── briefing ──"
+  head -n "${GEMINI_BRIEFING_LINES:-300}" "$BRIEFING"
+  TOTAL="$(wc -l < "$BRIEFING")"
+  if [[ "$TOTAL" -gt "${GEMINI_BRIEFING_LINES:-300}" ]]; then
+    echo "… briefing truncated at ${GEMINI_BRIEFING_LINES:-300} of $TOTAL lines: $BRIEFING"
+  fi
+fi
+
 echo "── result ──"
 python3 - "$RUN_DIR/result.json" "$RUN_DIR/verdict.json" "$RUN_ID" "$GATE_RC" <<'HANDOFF'
 import json, sys
@@ -230,4 +299,5 @@ print(json.dumps(result, ensure_ascii=False))
 HANDOFF
 
 echo "── full stream: gemini-watch $RUN_ID  ·  logs: $RUN_DIR ──"
+finish "[done]   run $RUN_ID finished"
 exit 0

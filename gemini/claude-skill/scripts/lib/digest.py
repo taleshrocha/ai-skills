@@ -247,7 +247,10 @@ def compact_result(final, meta):
     if not result.get("risk"):
         result["risk"] = "medium"
     if result.get("review") not in ("clean", "findings", "not_done"):
-        result["review"] = "not_done"
+        # Gemini often writes a review paragraph instead of the enum value.
+        # Prose means a review happened; the findings list says how it went.
+        result["review"] = ("findings" if result["findings"]
+                            else "clean" if result.get("review") else "not_done")
     if result.get("next") in ("", "[]", "{}", "null", None):
         result["next"] = "none"
 
@@ -296,6 +299,8 @@ def main():
     parser.add_argument("--max-lines", type=int, default=40)
     parser.add_argument("--out-result", default="")
     parser.add_argument("--out-meta", default="")
+    parser.add_argument("--summary-only", action="store_true",
+                        help="print only the trailer; the live stream already showed the steps")
     args = parser.parse_args()
 
     rows, meta, final = collect(args.events)
@@ -308,8 +313,12 @@ def main():
         Path(args.out_meta).write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(render(rows, meta, final, args.attempt, args.wall,
-                 args.max_lines, args.run_id, args.mode))
+    text = render(rows, meta, final, args.attempt, args.wall,
+                  args.max_lines, args.run_id, args.mode)
+    if args.summary_only:
+        lines = text.splitlines()
+        text = "\n".join([lines[0], lines[-1]]) if len(lines) > 1 else text
+    print(text)
 
 
 if __name__ == "__main__":

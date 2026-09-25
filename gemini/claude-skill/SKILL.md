@@ -41,21 +41,31 @@ Launch with Bash `run_in_background: true`, with a run id you choose:
 ```bash
 GEMINI_RUN_ID=job-$(date +%H%M%S) ~/.claude/skills/gemini/scripts/run-gemini.sh ultra <<'EOF'
 OBJECTIVE: <one concrete outcome>
-SCOPE: <files it may touch, and what it must not>
-REQUIREMENTS:
-- <numbered, testable, complete>
-ACCEPTANCE: <observable outcome>
+SCOPE: <what it may touch, and what it must not>
+CONSTRAINTS: Obey AGENTS.md / CLAUDE.md at the repository root.
+SPEC: The checker at <absolute path> is the specification. Read it and satisfy
+      every assertion. Do not modify it.
 
 ===VERIFY===
-<command that genuinely fails if the work is wrong>
+<project test or typecheck>
+<absolute path to the checker>
 EOF
 ```
 
-Everything after `===VERIFY===` is run by the gate. The gate only has teeth when
-those commands exist, and a command that cannot fail (`true`, `echo ok`) is
-worse than none. Where no suitable command exists, write a checker script,
-outside the repository, invoked by absolute path — **never let Gemini author
-its own pass criteria**.
+### Write the specification once
+
+The checker and the contract must not say the same thing twice. Writing
+requirements in prose and then asserting them again in a checker doubles the
+most expensive thing Claude produces — its own output.
+
+So: put the precision in the checker, and point the contract at it. The checker
+is a file on disk, so Gemini reads it for free, and it is the thing the gate
+actually enforces. The contract then only carries what a checker cannot express
+— the outcome, the scope, the constraints, and any decision you made.
+
+Keep prose requirements only for things no assertion can capture ("match the
+surrounding component conventions"). Everything mechanical belongs in the
+checker.
 
 Full template, verification guidance and `--ref` cross-repo use:
 `references/contract.md`.
@@ -127,8 +137,15 @@ gate. Services, controllers, React, CI: read the changed hunks. Production,
 credentials, auth, data mutation, network exposure, broad refactors: read hunks
 plus surrounding code and verify claims independently.
 
-Do not re-review what the gate already proved. Details and failure handling:
-`references/operations.md`.
+Do not re-review what the gate already proved.
+
+For low and medium risk, **delegate the review too**: a second run whose
+contract is "review this diff for defects and fix them", gated on the same
+commands. Then read `gemini-result` — findings only, a few hundred tokens —
+instead of thousands of tokens of diff. Reserve reading the diff yourself for
+high risk, where an independent judgement is the point.
+
+Details and failure handling: `references/operations.md`.
 
 ## Safety
 

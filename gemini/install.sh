@@ -28,10 +28,15 @@ install_file() {
 
 mkdir -p "$CLAUDE_DIR/references" "$CLAUDE_DIR/scripts/lib" "$GEMINI_DIR" "$BIN_DIR"
 
-install_file "$ROOT/claude-skill/SKILL.md"                      "$CLAUDE_DIR/SKILL.md"
-install_file "$ROOT/claude-skill/references/devops.md"          "$CLAUDE_DIR/references/devops.md"
-install_file "$ROOT/claude-skill/references/result-schema.json" "$CLAUDE_DIR/references/result-schema.json"
-install_file "$ROOT/claude-skill/scripts/run-gemini.sh"         "$CLAUDE_DIR/scripts/run-gemini.sh"
+install_file "$ROOT/claude-skill/SKILL.md"              "$CLAUDE_DIR/SKILL.md"
+install_file "$ROOT/claude-skill/scripts/run-gemini.sh" "$CLAUDE_DIR/scripts/run-gemini.sh"
+
+# Glob rather than list: a reference added to the repo but missing from this
+# script leaves SKILL.md pointing at a file that is not on disk.
+for f in "$ROOT"/claude-skill/references/*; do
+  [[ -f "$f" ]] || continue
+  install_file "$f" "$CLAUDE_DIR/references/$(basename "$f")"
+done
 for f in "$ROOT"/claude-skill/scripts/lib/*.py; do
   install_file "$f" "$CLAUDE_DIR/scripts/lib/$(basename "$f")"
 done

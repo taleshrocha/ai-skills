@@ -102,9 +102,29 @@ For substantial independent work, delegate:
 | `gemini-research-worker` | read-only recon: where things live, how they work |
 | `gemini-review-worker` | independent review of a bounded diff |
 
-Give each worker its own bounded contract and its own acceptance criteria. Do
-the work directly yourself when it is small — a subagent for a two-line change
-is pure overhead.
+### When to fan out
+
+Writing code is serial inside one agent: nothing else happens while you emit a
+file. Across agents it is parallel. A measured run spent 1695 seconds of which
+only 48 were tool execution — the remaining 27 minutes were one agent typing
+twelve files one after another.
+
+So: **when the contract requires creating or rewriting three or more files that
+do not depend on each other, delegate them.** Group them by responsibility, give
+each group one worker, and spawn every worker in a **single `invoke_subagent`
+call** so they run at the same time. Spawning them one at a time, waiting for
+each, is barely better than doing it yourself.
+
+Keep for yourself the parts that need the whole picture: the interfaces the
+workers must agree on, load order and wiring, and the final consistency pass.
+Decide those first and state them in each worker's contract, or they will
+disagree.
+
+Do it directly when the work is small, when the files genuinely depend on one
+another, or when a worker would spend longer being briefed than you would spend
+writing it. A subagent for a two-line change is pure overhead.
+
+Give each worker its own bounded contract and its own acceptance criteria.
 
 You remain responsible for whatever a worker returns. Verify their output
 against the same gate before you accept it.

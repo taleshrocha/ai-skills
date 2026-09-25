@@ -67,6 +67,11 @@ Keep prose requirements only for things no assertion can capture ("match the
 surrounding component conventions"). Everything mechanical belongs in the
 checker.
 
+**Reuse a checker across tasks of the same shape** — the same conventions
+applied to a second screen need the same assertions with different paths. For
+refactors, have the checker diff against a snapshot of the original; see
+`references/contract.md`, since a gate cannot otherwise see behaviour drift.
+
 Full template, verification guidance and `--ref` cross-repo use:
 `references/contract.md`.
 

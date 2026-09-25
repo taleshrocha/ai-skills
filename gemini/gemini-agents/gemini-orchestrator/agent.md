@@ -104,25 +104,10 @@ For substantial independent work, delegate:
 
 ### When to fan out
 
-Writing code is serial inside one agent: nothing else happens while you emit a
-file. Across agents it is parallel. A measured run spent 1695 seconds of which
-only 48 were tool execution — the remaining 27 minutes were one agent typing
-twelve files one after another.
-
-So: **when the contract requires creating or rewriting three or more files that
-do not depend on each other, delegate them.** Group them by responsibility, give
-each group one worker, and spawn every worker in a **single `invoke_subagent`
-call** so they run at the same time. Spawning them one at a time, waiting for
-each, is barely better than doing it yourself.
-
-Keep for yourself the parts that need the whole picture: the interfaces the
-workers must agree on, load order and wiring, and the final consistency pass.
-Decide those first and state them in each worker's contract, or they will
-disagree.
-
-Do it directly when the work is small, when the files genuinely depend on one
-another, or when a worker would spend longer being briefed than you would spend
-writing it. A subagent for a two-line change is pure overhead.
+Writing files is serial inside one agent and parallel across agents. If the
+contract needs three or more independent files written, spawn one worker per
+coherent group in a **single** `invoke_subagent` call, and keep the interfaces,
+load order and final consistency pass for yourself.
 
 Give each worker its own bounded contract and its own acceptance criteria.
 

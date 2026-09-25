@@ -58,3 +58,39 @@ against it: secrets never entering a build context, an image, or a log;
 cleanup steps that a later override cannot silently cancel; values that must
 come from configuration rather than being hardcoded; fail-fast on the settings
 whose absence degrades silently.
+
+
+## Refactors: assert preservation, not just shape
+
+A gate proves the new code compiles and looks right. It cannot see behaviour
+that quietly changed. On one measured refactor the gate passed clean and a
+review pass still found six real defects: a fallback swapped for the wrong
+default, `==` narrowed to `===`, a listener never reinstalled, a CSS selector
+mangled, a class that killed text wrapping.
+
+So for any "restructure without changing behaviour" task, snapshot the original
+first and make the checker compare against it:
+
+```bash
+git show HEAD:path/to/file > "$SCRATCH/orig"
+```
+
+Then assert that every one of these survived:
+
+- every function name callable from markup, and every `onclick` target
+- every DOM id and every CSS selector the code touches
+- every network call's URL, method and parameters
+- every event listener that was registered
+- comparison operators and default values in conditions you moved
+
+Name the snapshot in the contract as the behavioural reference. That converts
+"trust the model" into something the gate can actually fail on.
+
+## Reuse the checker
+
+Writing a checker is one of the few large Claude costs left, and for a repeated
+task shape — the same conventions applied to a second screen, a third service —
+it is almost entirely the same file. Keep it, parameterise the paths, and point
+the next contract at it.
+
+The second and later runs of a shape should cost little more than a contract.

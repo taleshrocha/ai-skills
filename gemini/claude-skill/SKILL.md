@@ -72,7 +72,8 @@ here — more than a minute of Gemini working.
   Claude turn per event. It turns this Skill into a token amplifier.
 - **Never narrate progress**, and never reprint the step timeline. The user
   already sees it streaming in the background task output.
-- On completion **do not read the task output file.** Run `gemini-result <id>`:
+- On completion **do not read the task output file**, and do not `tail` it
+  either. Run `gemini-result <id>`:
   gate verdict, files touched, status, findings. Roughly fifteen lines instead
   of hundreds.
 
@@ -82,9 +83,27 @@ why.
 The user watches live from their own terminal with `gemini-tail` (sparse) or
 `gemini-watch` (every step). Neither involves Claude.
 
-## Recon without reading the codebase
+## Never read the codebase yourself
 
-For anything needing broad knowledge of unfamiliar code, delegate the reading:
+This is the single largest cost in the whole workflow, and it does not announce
+itself: a 660-line component is ~6,000 tokens, and two of them plus a
+conventions file is ~20,000 — more than everything else in a delegated task
+combined.
+
+Hard rules:
+
+- **Never `cat` a source file.** If you want a whole file in context, you have
+  already lost. Cap any single read at about 150 lines, and only with
+  `sed -n 'A,Bp'` on a range you identified first.
+- **Never read convention files** — `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`,
+  style guides. Do not copy their rules into the contract. Write
+  `Obey AGENTS.md at the repository root` and let Gemini read it on its side,
+  where the tokens are cheap.
+- **Locate with `grep -n`, not with reads.** `grep -n 'symbol' file` gives you
+  the line numbers; `wc -l` gives you the size. That is usually enough to write
+  a contract.
+- **Anything more than that goes to recon.** One `--readonly` run returns a
+  briefing for a few hundred tokens instead of twenty thousand.
 
 ```bash
 ~/.claude/skills/gemini/scripts/run-gemini.sh ultra --readonly <<'EOF'
@@ -94,13 +113,12 @@ RETURN: path:line citations and the test command for this module.
 EOF
 ```
 
-The briefing is written to disk and **deliberately not printed** — briefings run
-to thousands of tokens. The run echoes only its `## KEY FACTS` block. Pull
-individual sections with `grep`/`sed` if you need more; load the whole file only
-when you genuinely must.
+The briefing is written to disk and deliberately not printed. The run echoes
+only its `## KEY FACTS` block; pull further sections with `grep`/`sed` if you
+actually need them.
 
-Claude opening source files "to be safe" is the largest avoidable cost in this
-workflow.
+The contract does not need the code in it. It needs the outcome, the scope, and
+verification — Gemini reads the files itself.
 
 ## Review, scaled to risk
 

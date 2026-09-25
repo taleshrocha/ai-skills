@@ -1,5 +1,5 @@
 {
-  "version": "14",
+  "version": "15",
   "modifies_caveman": false,
   "claude_skill": "claude-skill/SKILL.md",
   "claude_skill_scripts": [
@@ -26,8 +26,9 @@
     "gemini-web-worker"
   ],
   "monitor_commands": [
-    "gemini-watch",
+    "gemini-result",
     "gemini-tail",
+    "gemini-watch",
     "gemini-status",
     "gemini-runs"
   ],

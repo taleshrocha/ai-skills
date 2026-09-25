@@ -158,6 +158,9 @@ if [[ "$READONLY" == "1" ]]; then
     echo "Write your complete briefing, in Markdown, to exactly this path:"
     echo "  $BRIEFING"
     echo "That file IS the deliverable. The JSON result is only a pointer to it."
+    echo "Begin it with a '## KEY FACTS' section: at most 30 lines, the direct"
+    echo "answers only, no preamble. Everything else goes in sections below it."
+    echo "The reader loads KEY FACTS by default and the rest only when needed."
     echo "Do not write it anywhere else. Do not inline it into the JSON."
     echo "An empty or missing file fails the gate."
   } >> "$CONTRACT"
@@ -263,12 +266,10 @@ done
 
 # ---------------------------------------------------------------- handoff
 if [[ "$READONLY" == "1" && -s "$BRIEFING" ]]; then
-  echo "── briefing ──"
-  head -n "${GEMINI_BRIEFING_LINES:-300}" "$BRIEFING"
-  TOTAL="$(wc -l < "$BRIEFING")"
-  if [[ "$TOTAL" -gt "${GEMINI_BRIEFING_LINES:-300}" ]]; then
-    echo "… briefing truncated at ${GEMINI_BRIEFING_LINES:-300} of $TOTAL lines: $BRIEFING"
-  fi
+  # Deliberately NOT printed. A briefing is thousands of tokens; echoing it
+  # here puts it in the caller's context whether or not it is needed.
+  echo "── briefing: $(wc -l < "$BRIEFING") lines at $BRIEFING ──"
+  awk '/^## KEY FACTS/{f=1;print;next} /^## /{f=0} f' "$BRIEFING" | head -n 40
 fi
 
 echo "── result ──"

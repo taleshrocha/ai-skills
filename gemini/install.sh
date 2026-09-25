@@ -51,7 +51,7 @@ for dir in "$ROOT"/gemini-agents/*/; do
   install_file "$dir/agent.md" "$GEMINI_DIR/$name/agent.md"
 done
 
-for cmd in gemini-watch gemini-status gemini-runs gemini-tail; do
+for cmd in gemini-watch gemini-status gemini-runs gemini-tail gemini-result; do
   install_file "$ROOT/bin/$cmd" "$BIN_DIR/$cmd"
   chmod +x "$BIN_DIR/$cmd"
 done
@@ -59,7 +59,7 @@ done
 echo
 echo "Installed /gemini Skill:            $CLAUDE_DIR"
 echo "Installed Antigravity agents:       $GEMINI_DIR/<name>/agent.md"
-echo "Installed monitoring commands:      $BIN_DIR/{gemini-watch,gemini-tail,gemini-status,gemini-runs}"
+echo "Installed monitoring commands:      $BIN_DIR/{gemini-result,gemini-watch,gemini-tail,gemini-status,gemini-runs}"
 
 if [[ "$BACKED" -eq 1 ]]; then
   echo

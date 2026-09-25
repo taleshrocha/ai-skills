@@ -48,6 +48,19 @@ CODE_SUFFIXES = {
 }
 CODE_NAMES = {"Dockerfile", "Makefile", "Jenkinsfile"}
 
+# Build and tool artifacts. A read-only run that "changed" only these did not
+# actually touch the source; tsc writes a tsbuildinfo, a dev server rewrites
+# its cache. Failing on those would burn every retry for nothing.
+ARTIFACT_PARTS = (".next/", "node_modules/", "dist/", "build/", "target/",
+                  "__pycache__/", ".pytest_cache/", ".turbo/", ".venv/",
+                  "coverage/", ".gradle/")
+ARTIFACT_SUFFIXES = (".tsbuildinfo", ".log", ".pyc", ".lock.tmp")
+
+
+def is_artifact(path):
+    return (path.endswith(ARTIFACT_SUFFIXES)
+            or any(part in path for part in ARTIFACT_PARTS))
+
 
 def is_code(path):
     if not path:
@@ -251,11 +264,12 @@ def cmd_check(args):
                          if before.get(p) != after.get(p))
 
         if args.readonly:
-            # A reconnaissance run must leave the workspace exactly as it found it.
+            # A reconnaissance run must leave the source exactly as it found it.
             # Skipping the check is not the same as proving nothing happened.
-            if touched:
+            edited = [p for p in touched if not is_artifact(p)]
+            if edited:
                 reasons.append("Read-only run modified the workspace: "
-                               + ", ".join(touched[:10]))
+                               + ", ".join(edited[:10]))
         elif not changed and not escalate:
             reasons.append("No file in the workspace changed. Nothing was implemented.")
 
@@ -283,8 +297,12 @@ def cmd_check(args):
         if not required.exists() or not required.stat().st_size:
             reasons.append(f"Required output file was not written: {required.name}")
         else:
+            text = required.read_text(errors="replace")
             report.append(f"  briefing  {required.name} "
-                          f"({len(required.read_text(errors='replace').splitlines())} lines)")
+                          f"({len(text.splitlines())} lines)")
+            if "## KEY FACTS" not in text:
+                reasons.append("Briefing has no '## KEY FACTS' section; the reader "
+                               "would have to load the whole document.")
 
     commands = []
     if args.verify_file and Path(args.verify_file).exists():
